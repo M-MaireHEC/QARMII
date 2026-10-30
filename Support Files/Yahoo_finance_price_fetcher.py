@@ -608,15 +608,7 @@ if __name__ == "__main__":
 
     list_stock = tickers = [
 
-        "ALGN", "ATAI", "ADPT", "AMGN", "ACLX", "ARCT", "AZN.L", "BGNE", "CRSP", "CABA", "CDXS", "LLY",
-        "FATE", "GSK.L", "GH", "LCTX", "NVO", "OMRN", "REGN", "TEM", "VRTX", "LONN.SW", "7309.T",
-        "ABT", "BSX", "BKD", "CNC", "DXCM", "EW", "ELV", "HCA", "PODD", "ISRG", "MDT", "OMCL", "PEN",
-        "SYK", "TNDM", "TDOC", "TFX", "VTR", "WELL", "ZBH", "IRTC", "TGYM.MI", "ACHC", "UHS",
-        "DECK", "ONON", "GIVN.SW", "HUM", "UNH", "SOON.SW", "ADM", "DVA", "FMS", "AMP.MI", "LH",
-        "DGX", "STMN.SW", "CDXC", "GIS", "HAIN", "HLN.L", "MDLZ", "NESN.SW", "THULE.ST", "7936.T",
-        "ZTS", "AXSM", "EL", "NSIS.CO", "BRBR", "CMPS", "EHC", "A", "BDX", "DHR", "6861.T", "RVTY",
-        "STE", "TMO", "WST", "CPG.L", "OR.PA", "RMD", "BN.PA", "ASO", "ADS.DE", "AS", "DKS", "GRMN",
-        "LTH", "LULU", "NKE", "PTON", "PLNT", "6758.T", "UA", "SGSN.SW", "DSFIR.AS"
+        "AAPL"
 ]
     for a in list_stock:
 
