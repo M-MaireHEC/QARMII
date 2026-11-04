@@ -608,12 +608,16 @@ if __name__ == "__main__":
 
     list_stock = tickers = [
 
-        "AAPL"
+        "AAPL",
+        "MSFT",
+
 ]
     for a in list_stock:
 
         get_price_data(a)
         print(a)
+
+    get_risk_free_daily()
 """
     # Test FF3 and FF5
     print("Testing Fama-French 3 Factor Model...")
