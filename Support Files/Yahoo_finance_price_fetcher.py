@@ -8,6 +8,10 @@ from pathlib import Path
 import os
 import numpy as np
 import time
+from typing import Final
+
+
+
 
 # -----------------------------
 # Define project root path
@@ -42,6 +46,7 @@ DEFAULT_FREQUENCY = '1d'
 # -----------------------------
 INTRADAY_FREQUENCIES = ['5m', '30m', '1h']
 INTRADAY_MAX_PERIOD = '60d'
+START_DATE:Final = "1960-01-01"
 
 
 def get_frequency_folder(frequency: str) -> str:
@@ -161,10 +166,27 @@ def get_price_data(ticker: str, interval: str = "max", frequency: str = DEFAULT_
     if frequency == '1d':
         # Use history method for daily data
         stock = yf.Ticker(ticker)
+
         prices = stock.history(period=effective_interval)
         prices = prices.reset_index()
+
+        shares = stock.get_shares_full(start=START_DATE, end=None)
+        if shares is not None and not shares.empty:
+            shares_df = shares.to_frame(name="Shares").reset_index(names="Date")
+
+            # same date format on both sides: no timezone, midnight, ns precision
+            for df in (prices, shares_df):
+                df["Date"] = df["Date"].dt.tz_localize(None).dt.normalize().astype("datetime64[ns]")
+            shares_df = shares_df.drop_duplicates("Date", keep="last")
+
+            prices = pd.merge_asof(prices.sort_values("Date"), shares_df.sort_values("Date"),
+                                   on="Date", direction="backward")
+
         if 'Date' not in prices.columns and 'index' in prices.columns:
             prices = prices.rename(columns={'index': 'Date'})
+
+        #prices["Shares"] = prices["Shares"].ffill()
+        #prices["Market_Cap"] = prices["Shares"]*prices["Close"]
     else:
         # Use download method for non-daily frequencies
         prices = yf.download(ticker, interval=frequency, auto_adjust=True, period=effective_interval)
@@ -602,20 +624,30 @@ def get_weekly_prices(ticker: str = "AAPL", frequency: str = "5m") -> pd.DataFra
         print(data)
     return data
 
+def get_quarterly_statement_date(ticker_name, date):
+    ticker = yf.Ticker(ticker_name.upper())
+    total_shares = ticker.quarterly_income_stmt[date]
+    print(total_shares)
+
 
 if __name__ == "__main__":
     start = time.time()
+
 
     list_stock = tickers = [
 
         "AAPL",
         "MSFT",
+        "^RUT",
+
 
 ]
+
+    date = "2024-06-30"
     for a in list_stock:
 
         get_price_data(a)
-        print(a)
+
 
     get_risk_free_daily()
 """
