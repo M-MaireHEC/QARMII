@@ -12,6 +12,58 @@ from Constraint_Builders import *
 
 #All code that is used for normal constrained optimization
 
+
+#One date: add this date's rows (target return, tangency scale), solve, return the weights (or None).
+def weights_for_date(sigma, mu, cons, cons_w, tangency, target_cfg, ones):
+    cons_t = dict(cons)      # copies: this date's rows must not pile up in cons / cons_w
+    cons_w_t = dict(cons_w)
+
+    #Satisfies the target return needed
+    if target_cfg is not None:
+        exact = target_cfg["kind"] == "exact"
+        target = target_cfg["target"]
+        # lowest / highest return the constraints allow on this date (with or without long-only)
+        lo, hi = return_range(mu, cons_w)
+        if target > hi or (exact and target < lo):
+            return None  # unreachable this date
+        target_return(cons_w_t, mu, target, exact)  # w-form, used by the tangency check below
+        if not tangency:
+            target_return(cons_t, mu, target, exact)         # mu @ w >= target (or ==)
+        elif exact:
+            add_equality(mu - target * ones, 0.0, cons_t)    # (mu - target) @ y == 0
+        else:
+            add_inequality(target * ones - mu, 0.0, cons_t)  # (target - mu) @ y <= 0
+
+    #Tangency: fix the scale of y with this date's mu
+    if tangency:
+        # needs at least one allowed portfolio with a positive expected return, otherwise mu @ y = 1 is impossible
+        if return_range(mu, cons_w_t)[1] <= 0:
+            return None
+        add_equality(mu, 1.0, cons_t)  # mu @ y = 1
+
+    weight = Optimize_weights(sigma, cons_t)
+    #Tangency: the solver returned y -> rescale to weights that sum to 1
+    if tangency and weight is not None:
+        weight = weight / weight.sum() if weight.sum() > 1e-12 else None
+    return weight
+
+
+#Michaud resampling for one date:
+def michaud_weights(sigma, mu, n_obs, Z, **date_args):
+    L = np.linalg.cholesky(sigma)  # sigma = L @ L.T, turns independent normal draws into correlated returns
+    all_w = []
+    for z in Z:
+        fake = mu + z[:n_obs] @ L.T                    # n_obs months drawn from N(mu, sigma)
+        mu_k = fake.mean(axis=0)
+        sigma_k = LedoitWolf().fit(fake).covariance_
+        w_k = weights_for_date(sigma_k, mu_k, **date_args)
+        if w_k is not None:                            # skip fake histories where the problem is impossible
+            all_w.append(w_k)
+    if not all_w:
+        return None                                    # no fake history could be solved on this date
+    return np.mean(all_w, axis=0)
+
+
 def rolling_weights(ticker_list:list,constraints, start_date, end_date, step = 1, min_obs = 24, max_obs:bool = False):
     excess_returns = Create_excess_return_df(ticker_list)
     sigma_df = rolling_sigmas(excess_returns, start_date = start_date, end_date = end_date, step = step, min_obs = min_obs, max_obs = max_obs)
@@ -64,50 +116,32 @@ def rolling_weights(ticker_list:list,constraints, start_date, end_date, step = 1
         pass
 
     #checks whether there is a target return: only read the setting here,
-    #the row itself depends on mu, which changes every date -> added in the loop
     target_cfg = constraints["Target_Ret"]
+
+    #everything weights_for_date needs from above, bundled once (identical for every date)
+    date_args = dict(cons=cons, cons_w=cons_w, tangency=tangency, target_cfg=target_cfg, ones=ones)
+
+    #Michaud resampling: None = plain optimization (as before)
+    resampling = constraints.get("Resampling")
+    if resampling is not None:
+        rng = np.random.default_rng(resampling["seed"])
+        # Standard normal draws, created ONCE and reused for every date ("common random numbers"):
+        Z = rng.standard_normal((resampling["n_resamples"], sigma_df["Obs_num"].max(), n))
 
     rows = []
     for row in sigma_df.iter_rows(named=True):
         weight = None
         # Check the raw value first: np.array(None, dtype=float) gives array(nan), which is not None
         if row["VCV"] is not None:  # None = not enough data for this date
-            sigma = np.array(row["VCV"], dtype=float)
+            sigma = np.array(row["VCV"], dtype=float)  # original Ledoit-Wolf estimate (kept as is in sigma_df)
             mu = np.array(row["MU"], dtype=float)  # this date's mu, one per ticker
-            cons_t = dict(cons)      # copies: this date's rows must not pile up in cons / cons_w
-            cons_w_t = dict(cons_w)
-            reachable = True
 
-            #Satisfies the target return needed
-            if target_cfg is not None:
-                exact = target_cfg["kind"] == "exact"
-                target = target_cfg["target"]
-                # lowest / highest return the constraints allow on this date (with or without long-only)
-                lo, hi = return_range(mu, cons_w)
-                if target > hi or (exact and target < lo):
-                    reachable = False  # unreachable this date
-                else:
-                    target_return(cons_w_t, mu, target, exact)  # w-form, used by the tangency check below
-                    if not tangency:
-                        target_return(cons_t, mu, target, exact)         # mu @ w >= target (or ==)
-                    elif exact:
-                        add_equality(mu - target * ones, 0.0, cons_t)    # (mu - target) @ y == 0
-                    else:
-                        add_inequality(target * ones - mu, 0.0, cons_t)  # (target - mu) @ y <= 0
-
-            #Tangency: fix the scale of y with this date's mu
-            if reachable and tangency:
-                # needs at least one allowed portfolio with a positive expected return, otherwise mu @ y = 1 is impossible
-                if return_range(mu, cons_w_t)[1] <= 0:
-                    reachable = False
-                else:
-                    add_equality(mu, 1.0, cons_t)  # mu @ y = 1
-
-            if reachable:
-                weight = Optimize_weights(sigma, cons_t)
-                #Tangency: the solver returned y -> rescale to weights that sum to 1
-                if tangency and weight is not None:
-                    weight = weight / weight.sum() if weight.sum() > 1e-12 else None
+            if resampling is None:
+                #plain: one optimization on this date's estimates
+                weight = weights_for_date(sigma, mu, **date_args)
+            else:
+                #Michaud: average of the optimizations on many fake histories of the same length
+                weight = michaud_weights(sigma, mu, row["Obs_num"], Z, **date_args)
 
         rows.append({"Date": row["Date"], "Weights": None if weight is None else weight.tolist()})
 
@@ -145,6 +179,7 @@ if __name__ == "__main__":
     constraints = add_long_only_click(constraints)
 
     constraints = set_objective(constraints, "Tangency")
+    # constraints = set_resampling(constraints, n_resamples=200, seed=0)
     print(constraints)
 
 

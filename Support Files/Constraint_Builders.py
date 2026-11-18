@@ -61,6 +61,7 @@ def new_info_constraints():
         "Max_Weight":None,
         "Relative_Weight":None,
         "Target_Ret":None,
+        "Resampling":None,  # None = plain optimization, or {"n_resamples": ..., "seed": ...} via set_resampling (Michaud)
         "Objective":"MVP",  # "MVP" = min variance, "Tangency" = max Sharpe
     }
 
@@ -129,6 +130,11 @@ def budget(cd, n):
 #Set max weight of ALL
 def max_weight(cd, n, cap):
     return add_inequality(np.eye(n), np.full(n, cap), cd)
+
+#Set Michaud resampling
+def set_resampling(constraints, n_resamples: int = 200, seed: int = 0):
+    constraints["Resampling"] = {"n_resamples": n_resamples, "seed": seed}
+    return constraints
 
 def per_asset(value, tickers, default):
     """Number -> same value for every asset. Dict -> one value per ticker, others get `default`."""

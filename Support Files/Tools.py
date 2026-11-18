@@ -25,6 +25,7 @@ def rolling_sigmas(excess_return_df:pl.DataFrame, start_date, end_date, step = 1
         "Date": pl.Date,
         "VCV": pl.List(pl.List(pl.Float64)),
         "MU": pl.List(pl.Float64),  # one mean excess return per ticker (a flat list, not a matrix)
+        "Obs_num":pl.Int64,
         "Tickers": pl.List(str)
     })
 
@@ -56,13 +57,15 @@ def rolling_sigmas(excess_return_df:pl.DataFrame, start_date, end_date, step = 1
         else:
             Sigma = None
             Mu = None
-
+        # number of months in this window (T): Michaud resampling simulates fake histories of the same length
+        obs_num = ret.shape[0]
 
         results.append({
             "Date": date,
             "VCV": Sigma,
             "MU":Mu,
-            "Tickers": ticker_list
+            "Tickers": ticker_list,
+            "Obs_num":obs_num
         })
     
 
@@ -147,10 +150,10 @@ def summary_MVP_df(weights_df, sigma_df, name_of_weight = "Weights"):
             "MU": MU,
             "weight": weight,
             "port_ret": port_ret,
-            "port_vol": port_vol,
+            "port_vol": np.sqrt(port_vol) if port_vol is not None else None,  # np.sqrt(None) would crash on dates without weights
             "port_ret_annual":port_ret * 12 if port_ret is not None else None,
-            "port_vol_annual":port_vol * np.sqrt(12) if port_vol is not None else None,
-            "port_sharpe": port_ret*12 /(port_vol * np.sqrt(12)) if port_ret is not None and port_vol is not None else None,
+            "port_vol_annual":np.sqrt(port_vol) * np.sqrt(12) if port_vol is not None else None,
+            "port_sharpe": port_ret*12 /(np.sqrt(port_vol) * np.sqrt(12)) if port_ret is not None and port_vol is not None else None,
         })
     perf_port_df = pl.DataFrame(perf_port, schema={"Date": pl.Date,
                                                    "VCV": pl.List(pl.List(pl.Float64)),
