@@ -218,4 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-/Data_Output/
+# Data_Output: only the final data set is shared (see DATA.md)
+/Data_Output/*
+!/Data_Output/universe/
+
+# PyCharm settings and local zips
+.idea/
+*.zip
