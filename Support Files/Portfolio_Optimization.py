@@ -1,5 +1,6 @@
 import numpy as np
 from cvxopt import matrix, solvers
+import cvxopt as cp
 from typing import Final
 import polars as pl
 import sklearn
@@ -10,6 +11,8 @@ from skfolio.prior import BasePrior, ReturnDistribution
 from Tools import *
 from Constraint_Builders import *
 import time
+
+cp.solvers.options["show_progress"] = False
 
 #All code that is used for normal constrained optimization
 
