@@ -14,7 +14,7 @@ Outputs (<project>/Data_Output/universe/):
 """
 import time
 from pathlib import Path
-
+from Config import *
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -24,7 +24,7 @@ IN, OUT = ROOT / "Data_Input", ROOT / "Data_Output" / "universe"
 OUT.mkdir(parents=True, exist_ok=True)
 
 START = "1990-01-01"
-HISTORY_MONTHS = 120     # months of data an asset needs before it can be traded (10 years)
+HISTORY_MONTHS = MIN_OBS     # months of data an asset needs before it can be traded (10 years)
 END = pd.Timestamp.today().normalize() - pd.offsets.MonthEnd(1)   # last complete month
 try:
     pd.date_range("2000-01-31", periods=1, freq="ME")
@@ -38,41 +38,7 @@ except ValueError:
 #   msci:      MSCI index (Gross = dividends reinvested, USD), found by its column name
 # "TR ... Government Benchmark" = Thomson Reuters total-return index of the benchmark bond
 # of that maturity (coupons reinvested).
-ASSETS = {
-    "Gold":          ("investing", "xau_usd.csv", "USD"),           # spot, 1990
-    "Silver":        ("investing", "xag_usd.csv", "USD"),           # spot, 1990
-    "US Gov 10y":    ("investing", "tr_us10.csv", "USD"),           # TR US 10Y Gov Benchmark, 1990
-    "US Gov 30y":    ("investing", "tr_us30.csv", "USD"),           # TR US 30Y Gov Benchmark, 1990
-    "CH Gov 2y":     ("investing", "tr_ch2.csv", "CHF"),            # TR SW 2Y Gov Benchmark, 1990
-    "CH Gov 10y":    ("investing", "tr_ch10.csv", "CHF"),           # TR SW 10Y Gov Benchmark, 1990
-    "DE Gov 10y":    ("investing", "tr_de10.csv", "EUR"),           # TR Germany 10Y Gov Benchmark, 1990
-    "UK Gov 10y":    ("investing", "tr_uk10.csv", "GBP"),           # TR UK 10Y Gov Benchmark, 1990
-    "US Corp IG":    ("yahoo", "VWESX", "USD"),     # Vanguard Long-Term Investment-Grade fund, 1990
-    "US Corp HY":    ("yahoo", "VWEHX", "USD"),     # Vanguard High-Yield Corporate fund, 1990
-    "US Equity":     ("yahoo", "^SP500TR", "USD"),                  # S&P 500 Total Return, 1990
-    "CH Equity":     ("investing", "spi_tr.csv", "CHF"),            # SPI (Swiss Performance Index, TR), 1990
-    "DE Equity":     ("yahoo", "^GDAXI", "EUR"),                    # DAX (total return), 1990
-    "FR Equity":     ("investing", "cac40_tr.csv", "EUR"),          # CAC 40 Gross Total Return, 1990
-    "UK Equity":     ("investing", "ftse_allshare_tr.csv", "GBP"),  # FTSE All-Share TR, 1994
-    "US Small Cap":  ("msci", "USA Small Cap", "USD"),              # MSCI USA Small Cap Gross, 2001
-}
-
-# SMI after the Sep 2026 review (Amrize left out: too short) + former members still listed.
-# Credit Suisse is not on Yahoo any more (survivorship bias: mention it in the report).
-STOCKS = {
-    "ABB": "ABBN.SW", "Alcon": "ALC.SW", "Galderma": "GALD.SW", "Geberit": "GEBN.SW",
-    "Givaudan": "GIVN.SW", "Holcim": "HOLN.SW", "Logitech": "LOGN.SW", "Lonza": "LONN.SW",
-    "Nestle": "NESN.SW", "Novartis": "NOVN.SW", "Partners Group": "PGHN.SW", "Richemont": "CFR.SW",
-    "Roche": "RO.SW", "Sandoz": "SDZ.SW", "Sika": "SIKA.SW", "Swiss Life": "SLHN.SW",
-    "Swiss Re": "SREN.SW", "UBS": "UBSG.SW", "Zurich Insurance": "ZURN.SW",
-    # former members
-    "Swisscom": "SCMN.SW", "Kuehne+Nagel": "KNIN.SW", "Sonova": "SOON.SW", "SGS": "SGSN.SW",
-    "Swatch": "UHR.SW", "Adecco": "ADEN.SW",
-}
-
-# Yahoo errors confirmed against investing.com (no estimates, the bad months are left empty):
-STOCK_FIRST_MONTH = {"Givaudan": "2000-07", "Geberit": "1999-07"}  # Yahoo has pre-listing prices
-STOCK_BAD_MONTHS = {"Logitech": ["2001-01"]}                         # unadjusted split on Yahoo
+                       # unadjusted split on Yahoo
 
 
 def fred(sid):

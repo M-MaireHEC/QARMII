@@ -57,7 +57,7 @@ def michaud_weights(sigma, mu, n_obs, Z, **date_args):
     L = np.linalg.cholesky(sigma)  # sigma = L @ L.T, turns independent normal draws into correlated returns
     all_w = []
     for z in Z:
-        fake = mu + z[:n_obs] @ L.T                    # n_obs months drawn from N(mu, sigma)
+        fake = mu + z[:n_obs, :len(mu)] @ L.T                    # n_obs months drawn from N(mu, sigma)
         mu_k = fake.mean(axis=0)
         sigma_k = LedoitWolf().fit(fake).covariance_
         w_k = weights_for_date(sigma_k, mu_k, **date_args)
@@ -68,20 +68,8 @@ def michaud_weights(sigma, mu, n_obs, Z, **date_args):
     return np.mean(all_w, axis=0)
 
 
-def rolling_weights(ticker_list:list,constraints, start_date, end_date, step = 1, min_obs = 24, max_obs:bool = False):
-    excess_returns = Create_excess_return_df(ticker_list)
-    sigma_df = rolling_sigmas(excess_returns, start_date = start_date, end_date = end_date, step = step, min_obs = min_obs, max_obs = max_obs)
-    # no window at all -> the chosen period is shorter than min_obs months
-    if sigma_df.height == 0:
-        raise ValueError(f"The period between start_date and end_date has fewer than min_obs={min_obs} months.")
-    n = len(sigma_df["Tickers"][0])
+def build_date_args(constraints, n, caps, tangency, target_cfg):
     ones = np.ones(n)
-
-    #which portfolio we look for: "MVP" (min variance) or "Tangency" (max Sharpe), read like Long_only
-    objective = constraints.get("Objective", "MVP")
-    if objective not in VALID_OBJECTIVES:
-        raise ValueError(f"Objective must be one of {VALID_OBJECTIVES}, got {objective!r}")
-    tangency = objective == "Tangency"
 
     # Two sets of rows:
     #  cons_w : rows on the real weights w (sum(w) = 1). Only used to check which returns are reachable.
@@ -104,16 +92,38 @@ def rolling_weights(ticker_list:list,constraints, start_date, end_date, step = 1
         long_only(cons, n)  # same row for w and y: dividing by a positive number keeps the sign
 
     #checks whether there are limitation of maximal weight given to one asset
-    if constraints["Max_Weight"] is not None:
-        caps = per_asset(constraints["Max_Weight"], ticker_list, default=1.0)
-        if caps.sum() < 1:  # replaces cap * n < 1
-            raise ValueError(f"Caps sum to {caps.sum():.2f} < 1: weights can't reach 100%")
+    if caps is not None:
         max_weight(cons_w, n, caps)
         if not tangency:
             max_weight(cons, n, caps)  # w_i <= cap_i
         else:
             # w_i <= cap_i with w = y / sum(y)  ->  y_i - cap_i * sum(y) <= 0
             add_inequality(np.eye(n) - np.outer(caps, ones), np.zeros(n), cons)
+
+    return dict(cons=cons, cons_w=cons_w, tangency=tangency, target_cfg=target_cfg, ones=ones)
+
+
+def rolling_weights(ticker_list:list,constraints, start_date, end_date, step = 1, min_obs = 24, max_obs:bool = False):
+    excess_returns = Create_excess_return_df(ticker_list)
+    sigma_df = rolling_sigmas(excess_returns, start_date = start_date, end_date = end_date, step = step, min_obs = min_obs, max_obs = max_obs)
+    # no window at all -> the chosen period is shorter than min_obs months
+    if sigma_df.height == 0:
+        raise ValueError(f"The period between start_date and end_date has fewer than min_obs={min_obs} months.")
+    if sigma_df["VCV"].is_null().all():
+        raise ValueError(f"No date has {min_obs} months of returns for any asset: nothing to optimize.")
+    N = len(ticker_list)
+
+    #which portfolio we look for: "MVP" (min variance) or "Tangency" (max Sharpe), read like Long_only
+    objective = constraints.get("Objective", "MVP")
+    if objective not in VALID_OBJECTIVES:
+        raise ValueError(f"Objective must be one of {VALID_OBJECTIVES}, got {objective!r}")
+    tangency = objective == "Tangency"
+
+    caps_all = None
+    if constraints["Max_Weight"] is not None:
+        caps_all = per_asset(constraints["Max_Weight"], ticker_list, default=1.0)
+        if caps_all.sum() < 1:  # replaces cap * n < 1
+            raise ValueError(f"Caps sum to {caps_all.sum():.2f} < 1: weights can't reach 100%")
 
     #checks whether there are any relative weights to respect, to be implemented
     if constraints["Relative_Weight"] is not None:
@@ -122,30 +132,42 @@ def rolling_weights(ticker_list:list,constraints, start_date, end_date, step = 1
     #checks whether there is a target return: only read the setting here,
     target_cfg = constraints["Target_Ret"]
 
-    #everything weights_for_date needs from above, bundled once (identical for every date)
-    date_args = dict(cons=cons, cons_w=cons_w, tangency=tangency, target_cfg=target_cfg, ones=ones)
-
     #Michaud resampling: None = plain optimization (as before)
     resampling = constraints.get("Resampling")
     if resampling is not None:
         rng = np.random.default_rng(resampling["seed"])
         # Standard normal draws, created ONCE and reused for every date ("common random numbers"):
-        Z = rng.standard_normal((resampling["n_resamples"], sigma_df["Obs_num"].max(), n))
+        Z = rng.standard_normal((resampling["n_resamples"], sigma_df["Obs_num"].max(), N))
 
+    date_args_cache = {}
     rows = []
     for row in sigma_df.iter_rows(named=True):
         weight = None
         # Check the raw value first: np.array(None, dtype=float) gives array(nan), which is not None
         if row["VCV"] is not None:  # None = not enough data for this date
-            sigma = np.array(row["VCV"], dtype=float)  # original Ledoit-Wolf estimate (kept as is in sigma_df)
-            mu = np.array(row["MU"], dtype=float)  # this date's mu, one per ticker
+            tickers = row["Tickers"]
+            pos = [ticker_list.index(t) for t in tickers]
+            caps = None if caps_all is None else caps_all[pos]
 
-            if resampling is None:
-                #plain: one optimization on this date's estimates
-                weight = weights_for_date(sigma, mu, **date_args)
-            else:
-                #Michaud: average of the optimizations on many fake histories of the same length
-                weight = michaud_weights(sigma, mu, row["Obs_num"], Z, **date_args)
+            if caps is None or caps.sum() >= 1:
+                key = tuple(tickers)
+                if key not in date_args_cache:
+                    date_args_cache[key] = build_date_args(constraints, len(tickers), caps, tangency, target_cfg)
+                date_args = date_args_cache[key]
+
+                sigma = np.array(row["VCV"], dtype=float)  # original Ledoit-Wolf estimate (kept as is in sigma_df)
+                mu = np.array(row["MU"], dtype=float)  # this date's mu, one per ticker
+
+                if resampling is None:
+                    #plain: one optimization on this date's estimates
+                    w = weights_for_date(sigma, mu, **date_args)
+                else:
+                    #Michaud: average of the optimizations on many fake histories of the same length
+                    w = michaud_weights(sigma, mu, row["Obs_num"], Z, **date_args)
+
+                if w is not None:
+                    weight = np.zeros(N)
+                    weight[pos] = w
 
         rows.append({"Date": row["Date"], "Weights": None if weight is None else weight.tolist()})
 
@@ -184,13 +206,13 @@ if __name__ == "__main__":
     constraints = add_long_only_click(constraints)
 
     constraints = set_objective(constraints, "Tangency")
-    constraints = set_resampling(constraints, n_resamples=500, seed=0)
+    constraints = set_resampling(constraints, n_resamples=20, seed=0)
     print(constraints)
 
 
 
-    result = rolling_weights(ticker_list=["MSFT","AAPL","^RUT"],constraints=constraints,start_date=pl.date(year=1970,month=1,day=1),end_date=pl.date(year=2025,month=12,day=1),step=1,max_obs=False,min_obs=24)
-    summary = Summary_perf_df(result["weights_df"], result["sigma_df"])
+    result = rolling_weights(ticker_list=TICKER_LIST,constraints=constraints,start_date=pl.date(year=1970,month=1,day=1),end_date=pl.date(year=2025,month=12,day=1),step=1,max_obs=False,min_obs=24)
+    summary = Summary_perf_df(result["weights_df"], result["sigma_df"], TICKER_LIST)
     print(summary)
     end = time.time()
     print(end-start)

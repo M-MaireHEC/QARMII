@@ -71,7 +71,7 @@ def Combine_weights(master, k, rebalance_schedule, direction_from = "OPT", direc
     master = master.with_columns((1-pl.col(f"{direction_to}_weight")).alias(f"{direction_from}_weight"))
 
     #Clean of columns A/B that are not useful
-    master = master.remove(pl.col("A"), pl.col("B"))
+    master = master.drop("A", "B")
 
     fig = px.line(
             master.to_pandas(),
@@ -96,7 +96,7 @@ def master_df(Ticker_list = TICKER_LIST, start_date = START_DATE, end_date = END
     ERC_weights = ERC_dic["weights_df"]
     ERC_Sigma = ERC_dic["sigma_df"]
     del ERC_dic
-    ERC_df = Summary_perf_df(ERC_weights,ERC_Sigma)
+    ERC_df = Summary_perf_df(ERC_weights,ERC_Sigma,Ticker_list)
     del ERC_weights,ERC_Sigma
     #Change "to ERC_{name}"
     ERC_df = ERC_df.rename(lambda column_name: "ERC_"+column_name)
@@ -104,11 +104,11 @@ def master_df(Ticker_list = TICKER_LIST, start_date = START_DATE, end_date = END
     print(ERC_df.columns)
 
     #optimized portfolio
-    opt_portfolio = rolling_weights(ticker_list=TICKER_LIST,constraints=constraints,start_date=START_DATE,end_date=END_DATE,step=STEPS,min_obs=MIN_OBS,max_obs=MAX_OBS)
+    opt_portfolio = rolling_weights(ticker_list=Ticker_list,constraints=constraints,start_date=start_date,end_date=end_date,step=steps,min_obs=min_obs,max_obs=max_obs)
     opt_weights = opt_portfolio["weights_df"]
     opt_Sigma = opt_portfolio["sigma_df"]
     del opt_portfolio
-    opt_df = Summary_perf_df(opt_weights,opt_Sigma)
+    opt_df = Summary_perf_df(opt_weights,opt_Sigma,Ticker_list)
     del opt_weights,opt_Sigma
     #Change to OPT_{name}
     opt_df = opt_df.rename(lambda column_name: "OPT_"+column_name)
@@ -127,11 +127,14 @@ def master_df(Ticker_list = TICKER_LIST, start_date = START_DATE, end_date = END
 
 
 if "__main__" == __name__:
+    start = time.time()
     constraints = new_info_constraints()
     constraints = add_long_only_click(constraints)
-    constraints = set_objective(constraints,"MVP")
-    constraints = set_resampling(constraints,2)
+    constraints = set_objective(constraints,"Tangency")
+    constraints = set_resampling(constraints,10)
 
     master = master_df(Ticker_list = TICKER_LIST,start_date=START_DATE,end_date=END_DATE,steps=STEPS,min_obs=MIN_OBS,max_obs=MAX_OBS,constraints=constraints)
     Combine_weights(master, 0.1,12 )
+    end = time.time()
+    print(end-start, "Seconds")
 

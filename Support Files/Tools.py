@@ -19,6 +19,7 @@ def rolling_sigmas(excess_return_df:pl.DataFrame, start_date, end_date, step = 1
     excess_return_df = excess_return_df.sort("Date").with_row_index("Order")
 
     n = excess_return_df.shape[0]
+    universe = [c for c in excess_return_df.columns if c not in ("Order", "Date") and not c.endswith("_RET")]
 
     results = []
     schema = pl.Schema({
@@ -41,20 +42,23 @@ def rolling_sigmas(excess_return_df:pl.DataFrame, start_date, end_date, step = 1
             (pl.col("Order") >= first_month) & (pl.col("Order") < end_month)
         )
 
-        # assets = excess columns only; the "{ticker}_RET" columns are full returns, not extra assets
-        ticker_list = [c for c in data_slice.columns if c not in ("Order", "Date") and not c.endswith("_RET")]
-        total_list = [f"{t}_RET" for t in ticker_list]  # built from ticker_list so MU_TOTAL lines up with MU
+        counts = dict(zip(universe, data_slice.select(pl.col(universe).count()).row(0)))
+        ticker_list = [t for t in universe if counts[t] >= min_obs]
 
         date = data_slice["Date"][-1]
 
-        # one drop_nulls for both, so excess and full returns cover exactly the same months
-        clean = data_slice.drop_nulls()
+        while True:
+            total_list = [f"{t}_RET" for t in ticker_list]
+            clean = data_slice.select(ticker_list + total_list).drop_nulls()
+            if clean.height >= min_obs or not ticker_list:
+                break
+            ticker_list.remove(min(ticker_list, key=counts.get))
         ret = clean.select(ticker_list).to_numpy()
         ret_total = clean.select(total_list).to_numpy()
 
         # LedoitWolf needs a full window of months where EVERY ticker has a return.
         # Shorter windows (e.g. before a stock existed) get no Sigma (null).
-        if ret.shape[0] >= min_obs:
+        if ticker_list and ret.shape[0] >= min_obs:
 
             lw = LedoitWolf().fit(ret)
             Sigma = lw.covariance_
@@ -92,7 +96,16 @@ def rolling_sigmas(excess_return_df:pl.DataFrame, start_date, end_date, step = 1
 
     return df
 
-def Create_excess_return_df(tickers:list):
+#New helper to create the excess return with the cleaned data
+def Create_excess_return_df(tickers: list):
+    master_df = pl.read_parquet(MASTER_DATA_PATH/"Master.parquet")
+    df = master_df.select("Date", "RF_CHF", *[pl.col(t).alias(f"{t}_RET") for t in tickers])  # full returns
+    df = df.with_columns((pl.col(f"{t}_RET") - pl.col("RF_CHF")).alias(t) for t in tickers)   # excess
+    return df.select(pl.all().exclude("RF_CHF")).sort("Date")
+
+
+#Old function depreciated with new data format.
+def Create_excess_return_df_depr(tickers:list):
     #Load the DataFrame
     risk_free_rate = pl.read_parquet(MONTHLY_DATA_PATH/"^FVX.parquet")
     #Keep only the interesting columns
@@ -119,7 +132,8 @@ def Create_excess_return_df(tickers:list):
 
 
 
-def Summary_perf_df(weights_df, sigma_df, name_of_weight ="Weights"):
+def Summary_perf_df(weights_df, sigma_df, tickers, name_of_weight ="Weights"):
+    pos_of = {t: i for i, t in enumerate(tickers)}
 
 
 
@@ -136,7 +150,8 @@ def Summary_perf_df(weights_df, sigma_df, name_of_weight ="Weights"):
 
         VCV = result["VCV"]
         MU = result["MU"]
-        weight = result["Weights"]
+        MU_TOTAL = result["MU_TOTAL"]
+        weight = result[name_of_weight]
         date = result["Date"]
 
 
@@ -144,13 +159,17 @@ def Summary_perf_df(weights_df, sigma_df, name_of_weight ="Weights"):
 
             VCV = np.array(VCV, dtype=float)
             MU = np.array(MU, dtype=float)
+            MU_TOT = np.array(MU_TOTAL, dtype=float)
             weight = np.array(weight, dtype=float)
+            w = weight[[pos_of[t] for t in result["Tickers"]]]
 
-            port_ret = MU @ weight.T
-            port_vol = weight @ VCV @ weight.T
+            port_ret = MU @ w
+            port_ret_tot = MU_TOT @ w
+            port_vol = w @ VCV @ w
 
         else:
             port_ret = None
+            port_ret_tot = None
             port_vol = None
 
         perf_port.append({
@@ -159,6 +178,7 @@ def Summary_perf_df(weights_df, sigma_df, name_of_weight ="Weights"):
             "MU": MU,
             "weight": weight,
             "port_ret": port_ret,
+            "port_ret_tot": port_ret_tot,
             "port_vol": np.sqrt(port_vol) if port_vol is not None else None,  # np.sqrt(None) would crash on dates without weights
             "port_ret_annual":port_ret * 12 if port_ret is not None else None,
             "port_vol_annual":np.sqrt(port_vol) * np.sqrt(12) if port_vol is not None else None,
@@ -169,6 +189,7 @@ def Summary_perf_df(weights_df, sigma_df, name_of_weight ="Weights"):
                                                    "MU": pl.List(pl.Float64),
                                                    "weight": pl.List(pl.Float64),
                                                    "port_ret": pl.Float64,
+                                                   "port_ret_tot": pl.Float64,
                                                    "port_vol": pl.Float64,
                                                    "port_ret_annual": pl.Float64,
                                                    "port_vol_annual": pl.Float64,
@@ -179,7 +200,8 @@ def Summary_perf_df(weights_df, sigma_df, name_of_weight ="Weights"):
 
 
 
-
+if __name__ == "__main__":
+    pass
 
 
 
