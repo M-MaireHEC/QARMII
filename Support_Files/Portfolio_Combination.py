@@ -88,6 +88,35 @@ def Combine_weights(master, k, rebalance_schedule, direction_from = "OPT", direc
 def Portfolio_performance(master):
     pass
 
+#Only for visuals for streamlit
+def visual_combination(years, k, rebalancing):
+    investment_period = years*12
+    ranks = list(range(investment_period+1))
+    df = pl.DataFrame({
+        "months":ranks
+    })
+    df = df.with_columns(((pl.col("months")/(rebalancing+1)).floor()+1).alias("Rebalance"))
+
+    if k != 0:
+        # A == (e^(k*(year-min(years)))-1
+        df = df.with_columns((((k * (pl.col("Rebalance") - pl.col("Rebalance").min())).exp()) - 1).alias("A"))
+        # B == (e^(k*(max(year)-min(years)))-1
+        df = df.with_columns(
+            ((k * (pl.col("Rebalance").max() - pl.col("Rebalance").min())).exp() - 1).alias("B"))
+
+        df = df.with_columns((pl.col("A") / pl.col("B")).alias(f"ERC"))
+    else:
+        # A = t-t_min
+        df = df.with_columns((pl.col("Rebalance") - pl.col("Rebalance").min()).alias("A"))
+        # B = t_max - t_min
+        df = df.with_columns((pl.col("Rebalance").max() - pl.col("Rebalance").min()).alias("B"))
+        df = df.with_columns((pl.col("A") / pl.col("B")).alias(f"ERC"))
+
+    # Other portfolio weight
+    df = df.with_columns((1 - pl.col(f"ERC")).alias(f"OPT"))
+    return df
+
+
 #Joins into one singular dataframe <!> Binary only support. Three ports will fail
 def master_df(Ticker_list = TICKER_LIST, start_date = START_DATE, end_date = END_DATE, steps = STEPS, min_obs = MIN_OBS, max_obs = MAX_OBS, constraints = {}):
     #ERC portfolio
@@ -127,6 +156,9 @@ def master_df(Ticker_list = TICKER_LIST, start_date = START_DATE, end_date = END
 
 
 if "__main__" == __name__:
+
+    visual_combination(20,0,1)
+    """
     start = time.time()
     constraints = new_info_constraints()
     constraints = add_long_only_click(constraints)
@@ -137,4 +169,4 @@ if "__main__" == __name__:
     Combine_weights(master, 0.1,12 )
     end = time.time()
     print(end-start, "Seconds")
-
+    """

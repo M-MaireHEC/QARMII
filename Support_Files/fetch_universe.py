@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-ROOT = Path(__file__).resolve().parent.parent          # script sits in "Support Files"
+ROOT = Path(__file__).resolve().parent.parent          # script sits in "Support_Files"
 IN, OUT = ROOT / "Data_Input", ROOT / "Data_Output" / "universe"
 OUT.mkdir(parents=True, exist_ok=True)
 
