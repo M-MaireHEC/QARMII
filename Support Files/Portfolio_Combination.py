@@ -70,6 +70,9 @@ def Combine_weights(master, k, rebalance_schedule, direction_from = "OPT", direc
     #Other portfolio weight
     master = master.with_columns((1-pl.col(f"{direction_to}_weight")).alias(f"{direction_from}_weight"))
 
+    #Clean of columns A/B that are not useful
+    master = master.remove(pl.col("A"), pl.col("B"))
+
     fig = px.line(
             master.to_pandas(),
             x="Date",
@@ -82,7 +85,8 @@ def Combine_weights(master, k, rebalance_schedule, direction_from = "OPT", direc
 
     return master
 
-
+def Portfolio_performance(master):
+    pass
 
 #Joins into one singular dataframe <!> Binary only support. Three ports will fail
 def master_df(Ticker_list = TICKER_LIST, start_date = START_DATE, end_date = END_DATE, steps = STEPS, min_obs = MIN_OBS, max_obs = MAX_OBS, constraints = {}):

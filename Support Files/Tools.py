@@ -25,6 +25,7 @@ def rolling_sigmas(excess_return_df:pl.DataFrame, start_date, end_date, step = 1
         "Date": pl.Date,
         "VCV": pl.List(pl.List(pl.Float64)),
         "MU": pl.List(pl.Float64),  # one mean excess return per ticker (a flat list, not a matrix)
+        "MU_TOTAL": pl.List(pl.Float64),  # one mean full return per ticker (excess + RF), same order as MU
         "Obs_num":pl.Int64,
         "Tickers": pl.List(str)
     })
@@ -40,11 +41,16 @@ def rolling_sigmas(excess_return_df:pl.DataFrame, start_date, end_date, step = 1
             (pl.col("Order") >= first_month) & (pl.col("Order") < end_month)
         )
 
-        ticker_list = list(data_slice.select(pl.all().exclude("Order","Date")).columns)
+        # assets = excess columns only; the "{ticker}_RET" columns are full returns, not extra assets
+        ticker_list = [c for c in data_slice.columns if c not in ("Order", "Date") and not c.endswith("_RET")]
+        total_list = [f"{t}_RET" for t in ticker_list]  # built from ticker_list so MU_TOTAL lines up with MU
 
         date = data_slice["Date"][-1]
 
-        ret = data_slice.select(pl.all().exclude("Date", "Order")).drop_nulls().to_numpy()
+        # one drop_nulls for both, so excess and full returns cover exactly the same months
+        clean = data_slice.drop_nulls()
+        ret = clean.select(ticker_list).to_numpy()
+        ret_total = clean.select(total_list).to_numpy()
 
         # LedoitWolf needs a full window of months where EVERY ticker has a return.
         # Shorter windows (e.g. before a stock existed) get no Sigma (null).
@@ -54,9 +60,11 @@ def rolling_sigmas(excess_return_df:pl.DataFrame, start_date, end_date, step = 1
             Sigma = lw.covariance_
             Sigma = Sigma.tolist()
             Mu = ret.mean(axis=0).tolist()
+            Mu_total = ret_total.mean(axis=0).tolist()
         else:
             Sigma = None
             Mu = None
+            Mu_total = None
         # number of months in this window (T): Michaud resampling simulates fake histories of the same length
         obs_num = ret.shape[0]
 
@@ -64,6 +72,7 @@ def rolling_sigmas(excess_return_df:pl.DataFrame, start_date, end_date, step = 1
             "Date": date,
             "VCV": Sigma,
             "MU":Mu,
+            "MU_TOTAL":Mu_total,
             "Tickers": ticker_list,
             "Obs_num":obs_num
         })
@@ -96,12 +105,12 @@ def Create_excess_return_df(tickers:list):
         stock_df = pl.read_parquet(MONTHLY_DATA_PATH/f"{ticker}.parquet")
         close_df = stock_df.select("Date","Close")
         #compute returns
-        close_df = close_df.with_columns(pl.col("Close").pct_change().alias(f"{ticker}"))
-        close_df = close_df.select("Date",f"{ticker}")
+        close_df = close_df.with_columns(pl.col("Close").pct_change().alias(f"{ticker}_RET"))
+        close_df = close_df.select("Date",f"{ticker}_RET")
         df = df.join(close_df, on="Date", how="left")
 
-        #compute Excess return
-        df = df.with_columns(pl.col(f"{ticker}")-pl.col("RF").alias(f"{ticker}"))
+        #compute Excess return (parentheses: the alias must name the difference, not RF)
+        df = df.with_columns((pl.col(f"{ticker}_RET")-pl.col("RF")).alias(f"{ticker}"))
 
     result = df.select(pl.all().exclude("RF"))
 
