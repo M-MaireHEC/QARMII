@@ -110,7 +110,7 @@ def Create_excess_return_df(tickers:list):
 
 
 
-def summary_MVP_df(weights_df, sigma_df, name_of_weight = "Weights"):
+def Summary_perf_df(weights_df, sigma_df, name_of_weight ="Weights"):
 
 
 

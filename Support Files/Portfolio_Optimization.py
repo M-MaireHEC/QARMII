@@ -9,6 +9,7 @@ from skfolio.optimization import RiskBudgeting
 from skfolio.prior import BasePrior, ReturnDistribution
 from Tools import *
 from Constraint_Builders import *
+import time
 
 #All code that is used for normal constrained optimization
 
@@ -171,19 +172,22 @@ def Optimize_weights(Sigma, constraint_dict=None):
         return None
     return np.array(sol["x"]).ravel()
 
+#Tests
 if __name__ == "__main__":
-
+    start = time.time()
     constraints = new_info_constraints()
 
 
     constraints = add_long_only_click(constraints)
 
     constraints = set_objective(constraints, "Tangency")
-    # constraints = set_resampling(constraints, n_resamples=200, seed=0)
+    constraints = set_resampling(constraints, n_resamples=500, seed=0)
     print(constraints)
 
 
 
     result = rolling_weights(ticker_list=["MSFT","AAPL","^RUT"],constraints=constraints,start_date=pl.date(year=1970,month=1,day=1),end_date=pl.date(year=2025,month=12,day=1),step=1,max_obs=False,min_obs=24)
-    summary = summary_MVP_df(result["weights_df"], result["sigma_df"])
+    summary = Summary_perf_df(result["weights_df"], result["sigma_df"])
     print(summary)
+    end = time.time()
+    print(end-start)
