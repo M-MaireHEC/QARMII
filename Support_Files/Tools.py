@@ -134,6 +134,8 @@ def Create_excess_return_df_depr(tickers:list):
 
 def Summary_perf_df(weights_df, sigma_df, tickers, name_of_weight ="Weights"):
     pos_of = {t: i for i, t in enumerate(tickers)}
+    # weight and MU are saved as {ticker: value} structs, read them by name: pl.col("weight").struct.field("Nestle")
+    by_ticker = pl.Struct({t: pl.Float64 for t in tickers})
 
 
 
@@ -153,6 +155,16 @@ def Summary_perf_df(weights_df, sigma_df, tickers, name_of_weight ="Weights"):
         MU_TOTAL = result["MU_TOTAL"]
         weight = result[name_of_weight]
         date = result["Date"]
+        date_tickers = result["Tickers"]  # tickers of this date's window, same order as VCV and MU
+
+        # Name every value. The weights list follows `tickers` (0 for the ones not traded on this date),
+        # MU follows date_tickers (null for the tickers outside this date's window).
+        weight_named = None if weight is None else dict(zip(tickers, weight, strict=True))
+        if MU is None:
+            mu_named = None
+        else:
+            mu_of = dict(zip(date_tickers, MU, strict=True))
+            mu_named = {t: mu_of.get(t) for t in tickers}
 
 
         if VCV is not None and MU is not None and weight is not None:
@@ -174,9 +186,10 @@ def Summary_perf_df(weights_df, sigma_df, tickers, name_of_weight ="Weights"):
 
         perf_port.append({
             "Date": date,
+            "Tickers": date_tickers,
             "VCV": VCV,
-            "MU": MU,
-            "weight": weight,
+            "MU": mu_named,
+            "weight": weight_named,
             "port_ret": port_ret,
             "port_ret_tot": port_ret_tot,
             "port_vol": np.sqrt(port_vol) if port_vol is not None else None,  # np.sqrt(None) would crash on dates without weights
@@ -185,9 +198,10 @@ def Summary_perf_df(weights_df, sigma_df, tickers, name_of_weight ="Weights"):
             "port_sharpe": port_ret*12 /(np.sqrt(port_vol) * np.sqrt(12)) if port_ret is not None and port_vol is not None else None,
         })
     perf_port_df = pl.DataFrame(perf_port, schema={"Date": pl.Date,
+                                                   "Tickers": pl.List(pl.String),  # names of the VCV rows/columns
                                                    "VCV": pl.List(pl.List(pl.Float64)),
-                                                   "MU": pl.List(pl.Float64),
-                                                   "weight": pl.List(pl.Float64),
+                                                   "MU": by_ticker,
+                                                   "weight": by_ticker,
                                                    "port_ret": pl.Float64,
                                                    "port_ret_tot": pl.Float64,
                                                    "port_vol": pl.Float64,

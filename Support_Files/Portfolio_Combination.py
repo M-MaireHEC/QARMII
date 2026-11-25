@@ -1,5 +1,7 @@
 import numpy as np
 import pandas as pd
+from pandas.core.interchange.from_dataframe import primitive_column_to_ndarray
+
 from Config import *
 from Portfolio_Optimization import *
 from ERC import *
@@ -7,6 +9,7 @@ from Tools import *
 from Constraint_Builders import *
 import math
 import plotly.express as px
+from Wealth_Tax import wealth_base_tax, WEALTH_TAX_START
 
 VALID_DIRECTIONS:Final = ["ERC","OPT"]
 
@@ -42,7 +45,7 @@ def Combine_weights(master, k, rebalance_schedule, direction_from = "OPT", direc
     #add counter row
     master = master.with_row_index("Rebalance", offset = 1)
     #adapt to rebalance schedule
-    master = master.with_columns(((pl.col("Rebalance")/(rebalance_schedule+1)).floor()+1).cast(pl.Int32).alias("Rebalance"))
+    master = master.with_columns(((pl.col("Rebalance")/(rebalance_schedule)).floor()+1).cast(pl.Int32).alias("Rebalance"))
     print(master)
 
     #Ffill in case of nonetype or others in columns
@@ -59,16 +62,16 @@ def Combine_weights(master, k, rebalance_schedule, direction_from = "OPT", direc
         # B == (e^(k*(max(year)-min(years)))-1
         master = master.with_columns(((k*(pl.col("Rebalance").max()-pl.col("Rebalance").min())).exp()-1).alias("B"))
 
-        master = master.with_columns((pl.col("A")/pl.col("B")).alias(f"{direction_to}_weight"))
+        master = master.with_columns((pl.col("A")/pl.col("B")).alias(f"{direction_to}_portfolio_weight"))
     else:
         #A = t-t_min
         master = master.with_columns((pl.col("Rebalance")-pl.col("Rebalance").min()).alias("A"))
         #B = t_max - t_min
         master = master.with_columns((pl.col("Rebalance").max() - pl.col("Rebalance").min()).alias("B"))
-        master = master.with_columns((pl.col("A")/pl.col("B")).alias(f"{direction_to}_weight"))
+        master = master.with_columns((pl.col("A")/pl.col("B")).alias(f"{direction_to}_portfolio_weight"))
 
     #Other portfolio weight
-    master = master.with_columns((1-pl.col(f"{direction_to}_weight")).alias(f"{direction_from}_weight"))
+    master = master.with_columns((1-pl.col(f"{direction_to}_portfolio_weight")).alias(f"{direction_from}_portfolio_weight"))
 
     #Clean of columns A/B that are not useful
     master = master.drop("A", "B")
@@ -76,17 +79,128 @@ def Combine_weights(master, k, rebalance_schedule, direction_from = "OPT", direc
     fig = px.line(
             master.to_pandas(),
             x="Date",
-            y=[f"{direction_to}_weight",f"{direction_from}_weight"],
+            y=[f"{direction_to}_portfolio_weight",f"{direction_from}_portfolio_weight"],
             title="Portfolio Combination Weight"
 
         )
 
-    fig.show()
+    #fig.show()
 
     return master
 
 def Portfolio_performance(master):
-    pass
+
+    #call the master.parquet
+    ret_df = pl.read_parquet(MASTER_DATA_PATH/"master.parquet")
+
+    #join the returns to the master_df
+    #the join does not keep the date order, and cum_prod follows the row order
+    master = master.join(ret_df, on="Date", how="inner").sort("Date")
+
+    master = portfolio_drift_perf_handler(master,"OPT")
+    master = portfolio_drift_perf_handler(master,"ERC")
+
+    #compute the total portfolio return from both strategies (only once ERC and OPT are both built)
+    #the ERC/OPT split is set at each rebalance and then drifts with each sleeve until the next one:
+    #value since the rebalance = a * sum_ERC + b * sum_OPT, with a, b the shares of the period (a + b = 1)
+    master = master.with_columns(
+        (pl.col("ERC_portfolio_weight").first().over("Rebalance") * pl.col("sum_ERC")
+         + pl.col("OPT_portfolio_weight").first().over("Rebalance") * pl.col("sum_OPT")).alias("sum_PORTFOLIO")
+    )
+    #return of month t = value_t / value_(t-1) - 1, the value before the first month of a period is 1
+    master = master.with_columns(
+        (pl.col("sum_PORTFOLIO") / pl.col("sum_PORTFOLIO").shift(1).over("Rebalance").fill_null(1) - 1).alias("PORTFOLIO_PERFORMANCE")
+    )
+
+    return master
+
+def portfolio_drift_perf_handler(master, strategy):
+
+
+    #tickers taken from the struct itself, so names always match the weights
+    tick = [f.name for f in master.schema[f"{strategy}_weight"].fields]
+
+    #Transform all returns into multipliers (missing return = 0%, so a null does not break the product)
+    #Cummulative product of multipliers over reabalance
+    master = master.with_columns((pl.col(*tick).fill_null(0)+1).cum_prod().over("Rebalance").name.suffix("_cumprod"))
+    #multiply the weight with multiplier for OPT portfolio
+    master = master.with_columns(
+        (pl.col(f"{strategy}_weight").struct.field(t).first().over("Rebalance")  #take the ticker name from the struct
+         *
+         pl.col(f"{t}_cumprod")) #take the associated multiplier per ticker
+        .alias(f"{t}_{strategy}_value") #rename to name_OPT_value once computation done.
+    for t in tick #run over all the weights belonging to the struct
+    )
+
+    #Sum the ticker_cumprods to a sum column
+    #row-wise sum (across tickers), no .over needed = portfolio value since the last rebalance
+    TICKER_CUM_PROD = [f"{t}_{strategy}_value" for t in tick]
+    master = master.with_columns(pl.sum_horizontal(TICKER_CUM_PROD).alias(f"sum_{strategy}"))
+
+    #Normalize the drifted weights to get back to sum equal to 1 (parentheses: the suffix names the division)
+    master = master.with_columns((pl.col(*TICKER_CUM_PROD)/pl.col(f"sum_{strategy}")).name.suffix("_normalized"))
+    #check that sum of normalized weights equal to 1 (own name, sum_OPT is kept for the performance)
+    TICKER_NORM = [f"{t}_normalized" for t in TICKER_CUM_PROD]
+    master = master.with_columns(pl.sum_horizontal(TICKER_NORM).alias(f"check_{strategy}_weights"))
+
+    # weights held at the start of month t = drifted weights at the end of t-1, per period;
+    # the first month of each period starts from the target weight w0
+    master = master.with_columns(
+        pl.col(f"{t}_{strategy}_value_normalized").shift(1).over("Rebalance")
+        .fill_null(pl.col(f"{strategy}_weight").struct.field(t).first().over("Rebalance"))
+        .alias(f"{t}_{strategy}_w_start")
+        for t in tick
+    )
+
+    # portfolio return of month t = sum over tickers of w_start * r_t
+    master = master.with_columns(
+        pl.sum_horizontal(
+            pl.col(f"{t}_{strategy}_w_start") * pl.col(t).fill_null(0) for t in tick
+        ).alias(f"{strategy}_PERF")
+    )
+
+    return master
+
+#provide the numerical value of the portfolio taking into account interest payments
+#interest_payment = amount paid out to the investor (taken from the portfolio) every interest_frequency months
+#taxes=True: wealth tax (Wealth_Tax.py, coefficient 100 %) is taken from the portfolio on its value at 31 December
+def numerical_performance_portfolio(master, start_amount:float, interest_payment:float,interest_frequency:int, taxes:bool= False):
+    #only months where both portfolios have weights (otherwise PORTFOLIO_PERFORMANCE is a fake 0), in date order
+    master = master.filter(pl.col("ERC_weight").is_not_null() & pl.col("OPT_weight").is_not_null()).sort("Date")
+
+    #add the interest payment according to frequency
+    master = master.with_row_index("Month",offset=1)
+    master = master.with_columns(
+        pl.when((pl.col("Month")%interest_frequency) == 0).then(pl.lit(float(interest_payment))).otherwise(0.00).alias("interest")
+    )
+
+    #value_t = value_(t-1) * (1 + return_t) - payment_t (- wealth tax in December)
+    #polars cannot use the previous row of the column it is creating, so the recursion is a plain loop (one row per month)
+    returns = master["PORTFOLIO_PERFORMANCE"].to_list()
+    payments = master["interest"].to_list()
+    is_december = (master["Date"].dt.month() == 12).to_list()
+
+    value = float(start_amount)
+    values, taxes_paid = [], []
+    for ret, payment, december in zip(returns, payments, is_december):
+        value = value * (1 + ret) - payment   #return of the month first, then the payment at the end of the month
+        tax = 0.0
+        if taxes and december and value >= WEALTH_TAX_START[0]:   #the tax table starts at 50'000 CHF
+            tax = wealth_base_tax(value)
+            value -= tax
+        value = max(value, 0.0)   #portfolio used up: stays at 0
+        values.append(value)
+        taxes_paid.append(tax)
+
+    master = master.with_columns(
+        pl.Series("wealth_tax", taxes_paid),
+        pl.Series("PORTFOLIO_VALUE", values),
+    )
+    print(master)
+    fig = px.line(master, x="Date", y="PORTFOLIO_VALUE")
+    fig.show()
+    return master
+
 
 #Only for visuals for streamlit
 def visual_combination(years, k, rebalancing):
@@ -95,7 +209,7 @@ def visual_combination(years, k, rebalancing):
     df = pl.DataFrame({
         "months":ranks
     })
-    df = df.with_columns(((pl.col("months")/(rebalancing+1)).floor()+1).alias("Rebalance"))
+    df = df.with_columns(((pl.col("months")/(rebalancing)).floor()+1).alias("Rebalance"))
 
     if k != 0:
         # A == (e^(k*(year-min(years)))-1
@@ -157,16 +271,18 @@ def master_df(Ticker_list = TICKER_LIST, start_date = START_DATE, end_date = END
 
 if "__main__" == __name__:
 
-    visual_combination(20,0,1)
-    """
+    #visual_combination(20,0,1)
+
     start = time.time()
     constraints = new_info_constraints()
     constraints = add_long_only_click(constraints)
-    constraints = set_objective(constraints,"Tangency")
-    constraints = set_resampling(constraints,10)
+    constraints = set_objective(constraints,"MVP")
+    #constraints = set_resampling(constraints,2) #take som compute power, not activated for quicker tests.
 
     master = master_df(Ticker_list = TICKER_LIST,start_date=START_DATE,end_date=END_DATE,steps=STEPS,min_obs=MIN_OBS,max_obs=MAX_OBS,constraints=constraints)
-    Combine_weights(master, 0.1,12 )
+    master = Combine_weights(master, 0,1 )
+    master = Portfolio_performance(master = master)
+    master = numerical_performance_portfolio(master, 1_000_000,2500,1,True )
+    print(master.select("Date", "PORTFOLIO_PERFORMANCE", "interest", "wealth_tax", "PORTFOLIO_VALUE"))
     end = time.time()
     print(end-start, "Seconds")
-    """
