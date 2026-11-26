@@ -225,3 +225,5 @@ __marimo__/
 # PyCharm settings and local zips
 .idea/
 *.zip
+
+walkthrough.py
