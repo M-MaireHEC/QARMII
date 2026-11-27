@@ -22,7 +22,11 @@ def wrapper(refresh_data:bool = False,
             direction_to = "ERC",
             k = 1,
             rebalance_schedule = 1,
+            ticker_list: list | None = None,   # assets to invest in, None = every asset of TICKER_LIST
             ):
+    #TICKER_LIST is Final: never changed, a selection is always a new list
+    if ticker_list is None:
+        ticker_list = list(TICKER_LIST)
     if refresh_data:
         #fetch the data
         build()
@@ -35,7 +39,7 @@ def wrapper(refresh_data:bool = False,
     if launch_click:
         print("OPT launched")
         st.session_state["master"] = sequence(constraints=constraints,
-                          Tickers=TICKER_LIST,
+                          Tickers=ticker_list,
                           start_amount=start_amount,
                           interest_frequency= frequency,
                           interest = interest,
@@ -233,8 +237,9 @@ def nice_graphs (master:pl.DataFrame, direction_from, direction_to):
 
 
 #Maximum weight input, used for both portfolios: one cap for every asset, plus optional caps for single tickers.
-#Returns None (no cap), a number (same cap for every ticker) or a dict {ticker: cap}.
-def max_weight_input(portfolio: str, table_key: str, note: str = ""):
+#Returns None (no cap), a number (same cap for every ticker) or a dict {ticker: cap} of the chosen tickers only
+#(the optimizer refuses caps for tickers that are not in the ticker list).
+def max_weight_input(portfolio: str, table_key: str, tickers: list, note: str = ""):
     if not st.toggle(f"Maximum weight per asset ({portfolio})?"):
         return None
     cap_all = st.slider(f"Maximum weight for every asset, {portfolio} (%)", 1, 100, value=20)
@@ -242,13 +247,15 @@ def max_weight_input(portfolio: str, table_key: str, note: str = ""):
     st.caption(f"Needs at least {math.ceil(100 / cap_all)} tradable assets on a date, dates with fewer get no weights. {note}")
 
     #table of the 41 tickers: leave the cell empty to keep the cap above, fill it to give that ticker its own cap.
-    #the table never changes between reruns, so Streamlit keeps the edits (even when the slider moves)
+    #the table never changes between reruns, so Streamlit keeps the edits (even when the slider moves).
+    #It always lists every ticker: Streamlit stores the edits by row number, so removing rows would move a cap to another ticker.
     caps_table = pd.DataFrame({
         "Ticker": list(ASSETS.keys()) + list(STOCKS.keys()),
         "Group": ["Asset class"] * len(ASSETS) + ["Swiss stock"] * len(STOCKS),
         "Own cap (%)": [None] * (len(ASSETS) + len(STOCKS)),
     })
     with st.expander(f"Own cap for some tickers ({portfolio})"):
+        st.caption("Caps of assets that are not selected are ignored.")
         edited = st.data_editor(
             caps_table,
             key=table_key,
@@ -257,13 +264,37 @@ def max_weight_input(portfolio: str, table_key: str, note: str = ""):
             column_config={"Own cap (%)": st.column_config.NumberColumn(min_value=0, max_value=100, step=1)},
         )
 
-    #one cap per ticker, by name (tickers missing from a dict get 100 %, so all 41 are filled in)
+    #one cap per chosen ticker, by name
     caps = {
         row["Ticker"]: (cap_all if pd.isna(row["Own cap (%)"]) else row["Own cap (%)"]) / 100
         for row in edited.to_dict("records")
+        if row["Ticker"] in tickers
     }
-    #same cap everywhere -> pass the number, otherwise the dict {ticker: cap}
-    return cap_all / 100 if len(set(caps.values())) == 1 else caps
+    #same cap everywhere -> pass that number, otherwise the dict {ticker: cap}
+    if len(set(caps.values())) <= 1:
+        return next(iter(caps.values()), cap_all / 100)
+    return caps
+
+
+#sum of the caps over the chosen tickers: below 100 % the weights can never add up to 100 %
+def caps_total(caps, tickers: list) -> float:
+    if caps is None:
+        return float("inf")
+    if isinstance(caps, dict):
+        return sum(caps.get(t, 1.0) for t in tickers)
+    return caps * len(tickers)
+
+
+#asset selection: returns a NEW list in TICKER_LIST order (TICKER_LIST itself is Final and never changed)
+def asset_picker() -> list:
+    st.subheader("Assets")
+    chosen_assets = st.multiselect("Asset classes", options=list(ASSETS.keys()), default=list(ASSETS.keys()))
+    chosen_stocks = st.multiselect("Swiss stocks", options=list(STOCKS.keys()), default=list(STOCKS.keys()))
+    chosen = set(chosen_assets) | set(chosen_stocks)
+    ticker_list = [t for t in TICKER_LIST if t in chosen]
+    st.caption(f"{len(ticker_list)} of {len(TICKER_LIST)} assets selected. "
+               f"An asset only enters the portfolios once it has {MIN_OBS} months of returns.")
+    return ticker_list
 
 
 if __name__ == "__main__":
@@ -271,6 +302,10 @@ if __name__ == "__main__":
     constraints = new_info_constraints()
 
     st.title("Web Streamlit")
+
+    #which assets the two portfolios may hold
+    ticker_list = asset_picker()
+    st.subheader("Settings")
 
     #Add long only constraint
     long = st.toggle("Long only portfolio")
@@ -304,9 +339,9 @@ if __name__ == "__main__":
         constraints = set_resampling(constraints, sample_val)
 
     #ask for maximum weights, separately for the optimized portfolio and for the ERC portfolio
-    constraints["Max_Weight"] = max_weight_input("optimized portfolio", table_key="caps_table")
+    constraints["Max_Weight"] = max_weight_input("optimized portfolio", table_key="caps_table", tickers=ticker_list)
     constraints["ERC_Cap"] = max_weight_input(
-        "ERC portfolio", table_key="erc_caps_table",
+        "ERC portfolio", table_key="erc_caps_table", tickers=ticker_list,
         note="A cap that binds makes the risk contributions unequal: the result is then risk budgeting with bounds, not a pure ERC.")
 
     #ask for financial amounts
@@ -347,10 +382,23 @@ if __name__ == "__main__":
     #refresh the data / launch the optimization: one wrapper call handles both buttons
     #(two calls would run the data refresh twice)
     refresh_data = st.button("Refresh Data")
-    launch_click = st.button("Launch")
+
+    #settings that cannot give a portfolio: say why and keep Launch disabled
+    problems = []
+    if len(ticker_list) < 2:
+        problems.append("Select at least 2 assets.")
+    for name, caps in (("optimized portfolio", constraints["Max_Weight"]), ("ERC portfolio", constraints["ERC_Cap"])):
+        if ticker_list and caps_total(caps, ticker_list) < 1 - 1e-9:
+            problems.append(f"The caps of the {name} add up to {caps_total(caps, ticker_list):.0%} "
+                            f"over the selected assets: the weights cannot reach 100 %.")
+    for problem in problems:
+        st.warning(problem)
+
+    launch_click = st.button("Launch", disabled=bool(problems))
     wrapper(refresh_data=refresh_data, constraints=constraints, launch_click=launch_click,
             start_amount=loan_amount, interest=interest, frequency=withdrawal_frequency, taxes=taxes,
-            direction_from=direction_from, direction_to=direction_to, k = k, rebalance_schedule=rebalance)
+            direction_from=direction_from, direction_to=direction_to, k = k, rebalance_schedule=rebalance,
+            ticker_list=ticker_list)
 
     #Show current constraint
     st.write(constraints)

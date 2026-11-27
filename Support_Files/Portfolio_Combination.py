@@ -39,9 +39,11 @@ def Combine_weights(master, k, rebalance_schedule, direction_from = "OPT", direc
         direction_to = "ERC"
 
 
-    total_obs = min(len(master["ERC_weight"]), len(master["OPT_weight"])) #maximum common found weights
-    #slice from below
-    master = master[-(total_obs-1):]
+    #start at the first month where BOTH portfolios have weights (len() counts nulls, so slicing by length
+    #only dropped one row: with several empty months at the start, e.g. caps needing more tradable assets,
+    #the first rebalance period held nothing and its returns were 0/0 = NaN)
+    first_date = master.filter(pl.col("ERC_weight").is_not_null() & pl.col("OPT_weight").is_not_null())["Date"].min()
+    master = master.filter(pl.col("Date") >= first_date).sort("Date")
 
     #add counter row
     master = master.with_row_index("Rebalance", offset = 1)
