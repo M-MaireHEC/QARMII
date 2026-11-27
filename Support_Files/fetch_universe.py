@@ -184,9 +184,9 @@ def build():
     stocks = pd.DataFrame(stocks)
 
     rf = rf_chf()
-    assets.to_csv(OUT / "assets_returns_chf_monthly.csv")
-    stocks.to_csv(OUT / "smi_stocks_returns_chf_monthly.csv")
-    rf.to_csv(OUT / "rf_chf_monthly.csv")
+    assets.to_csv(ASSETS_RET_FILE)
+    stocks.to_csv(STOCKS_RET_FILE)
+    rf.to_csv(RF_FILE)
 
     # when each asset has HISTORY_MONTHS of returns and can enter the optimisation
     avail = pd.DataFrame({

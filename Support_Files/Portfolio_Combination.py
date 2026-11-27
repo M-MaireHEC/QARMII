@@ -7,6 +7,7 @@ from Portfolio_Optimization import *
 from ERC import *
 from Tools import *
 from Constraint_Builders import *
+from Data_Cleaner import ensure_master_data
 import math
 import plotly.express as px
 from Wealth_Tax import wealth_base_tax, WEALTH_TAX_START
@@ -91,7 +92,8 @@ def Combine_weights(master, k, rebalance_schedule, direction_from = "OPT", direc
 def Portfolio_performance(master):
 
     #call the master.parquet
-    ret_df = pl.read_parquet(MASTER_DATA_PATH/"master.parquet")
+    ensure_master_data()
+    ret_df = pl.read_parquet(MASTER_FILE)
 
     #join the returns to the master_df
     #the join does not keep the date order, and cum_prod follows the row order

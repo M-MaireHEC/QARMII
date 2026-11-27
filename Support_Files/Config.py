@@ -12,6 +12,13 @@ MONTHLY_DATA_PATH: Final[Path] = DATA_PATH / "Monthly"
 MASTER_DATA_PATH: Final[Path] = DATA_PATH / "Master"
 UNIVERSE_DATA_PATH: Final[Path] = DATA_PATH / "universe"
 
+#Data files, named once here: Linux servers (Streamlit Cloud) are case-sensitive, Windows is not,
+#so "rf_CHF_monthly.csv" and "rf_chf_monthly.csv" are the same file on Windows but not on the server.
+MASTER_FILE: Final[Path] = MASTER_DATA_PATH / "Master.parquet"           #built by Data_Cleaner, not in git
+STOCKS_RET_FILE: Final[Path] = UNIVERSE_DATA_PATH / "smi_stocks_returns_chf_monthly.csv"  #built by fetch_universe, in git
+ASSETS_RET_FILE: Final[Path] = UNIVERSE_DATA_PATH / "assets_returns_chf_monthly.csv"      #built by fetch_universe, in git
+RF_FILE: Final[Path] = UNIVERSE_DATA_PATH / "rf_chf_monthly.csv"                          #built by fetch_universe, in git
+
 #Dates
 START_DATE: Final = pl.date(year=1960, month=1, day=1)
 END_DATE: Final = pl.date(year=2025, month=1, day=1)

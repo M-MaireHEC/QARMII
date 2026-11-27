@@ -8,6 +8,7 @@ from Config import *
 from skfolio.optimization import RiskBudgeting
 from skfolio.prior import BasePrior, ReturnDistribution
 from Constraint_Builders import *
+from Data_Cleaner import ensure_master_data
 
 
 
@@ -110,7 +111,8 @@ def rolling_sigmas(excess_return_df:pl.DataFrame, start_date, end_date, step = 1
 
 #New helper to create the excess return with the cleaned data
 def Create_excess_return_df(tickers: list):
-    master_df = pl.read_parquet(MASTER_DATA_PATH/"Master.parquet")
+    ensure_master_data()  # creates Master.parquet when missing (e.g. fresh Streamlit Cloud deploy)
+    master_df = pl.read_parquet(MASTER_FILE)
     df = master_df.select("Date", "RF_CHF", *[pl.col(t).alias(f"{t}_RET") for t in tickers])  # full returns
     df = df.with_columns((pl.col(f"{t}_RET") - pl.col("RF_CHF")).alias(t) for t in tickers)   # excess
     return df.select(pl.all().exclude("RF_CHF")).sort("Date")
