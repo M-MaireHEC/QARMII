@@ -131,7 +131,7 @@ if __name__ == "__main__":
 
     #ask for financial amounts
     loan_amount = st.number_input(label="Loan amount", min_value=1, value=1_000_000)  # start amount of the portfolio
-    interest = st.number_input(label="Interest payements", min_value=0.01)
+    interest = st.number_input(label="Interest payements", min_value=0, value = 600)
     additional_spending = st.number_input(label="Additional withdrawals", min_value=0)
     interest = interest+additional_spending
     withdrawal_frequency = st.slider("How frequently do you withdraw ?", min_value=1, max_value=36, value = 12)
