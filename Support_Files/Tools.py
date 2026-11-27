@@ -9,6 +9,18 @@ from skfolio.optimization import RiskBudgeting
 from skfolio.prior import BasePrior, ReturnDistribution
 from Constraint_Builders import *
 
+MARKET_CAPS = pl.read_parquet(MASTER_DATA_PATH / "market_caps.parquet")
+BL_MARKET_SHARPE = 0.25
+
+def implied_returns(Sigma, tickers, date):
+    """Implied equilibrium excess returns: the mu for which the value-weighted portfolio is optimal.
+    Pi = delta * Sigma @ w_mkt, monthly because Sigma is monthly."""
+    caps = (MARKET_CAPS.filter(pl.col("Date") <= date).sort("Date").tail(1)
+            .select(tickers).to_numpy().ravel())        # last caps known at `date`: no look-ahead
+    w_mkt = np.nan_to_num(caps) / np.nansum(caps)       # no cap yet -> weight 0
+    sigma_x0 = np.sqrt(w_mkt @ Sigma @ w_mkt)
+    return (BL_MARKET_SHARPE / np.sqrt(12)) * Sigma @ w_mkt / sigma_x0
+
 #Preparing the Sigmas per period (method uses LedoitWolf).
 def rolling_sigmas(excess_return_df:pl.DataFrame, start_date, end_date, step = 1, min_obs = 24, max_obs:bool = False):
     # max_obs=True -> rolling window of min_obs months; max_obs=False -> expanding window (all months since start)
@@ -63,7 +75,7 @@ def rolling_sigmas(excess_return_df:pl.DataFrame, start_date, end_date, step = 1
             lw = LedoitWolf().fit(ret)
             Sigma = lw.covariance_
             Sigma = Sigma.tolist()
-            Mu = ret.mean(axis=0).tolist()
+            Mu = implied_returns(Sigma, ticker_list, date)
             Mu_total = ret_total.mean(axis=0).tolist()
         else:
             Sigma = None
