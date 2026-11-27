@@ -4,6 +4,7 @@ Run locally:  streamlit run app.py      (from the project folder)
 The strategy code lives in Support_Files; app_backend.py connects it to this page.
 """
 import json
+import math
 from datetime import date
 from pathlib import Path
 
@@ -78,6 +79,43 @@ def cached_frontier(tickers, d, min_obs):
     return B.frontier(RETS, RF, list(tickers), d, min_obs=min_obs)
 
 
+FIRST_RETURNS = st.cache_resource(B.first_returns)()
+
+
+def glide_text(k, frm, to):
+    """Plain words for the shape of the glide path."""
+    if k == 0:
+        return f"the same amount moves from {frm} to {to} at each rebalancing"
+    if k > 0:
+        return f"the money stays longer in {frm} and moves to {to} faster towards the end"
+    return f"the money moves to {to} fast at the start, then more slowly"
+
+
+# one row per asset, always all of them: the editor keeps the edits by row number, so the table never changes
+CAPS_TABLE = pd.DataFrame({"Asset": TICKER_LIST,
+                           "OPT cap (%)": np.full(len(TICKER_LIST), np.nan),
+                           "ERC cap (%)": np.full(len(TICKER_LIST), np.nan)})
+
+
+def caps_setting(edited, column, cap_all, tickers):
+    """Caps for the engine: None (no cap), one number (same cap for every asset) or {ticker: cap}
+    over the chosen assets only (the optimiser refuses caps for assets outside its ticker list)."""
+    own = {r["Asset"]: r[column] for r in edited.to_dict("records") if pd.notna(r[column])}
+    caps = {t: float(own.get(t, cap_all)) / 100 for t in tickers}
+    values = set(caps.values())
+    if all(v >= 1 for v in values):
+        return None
+    if len(values) == 1:
+        return values.pop()
+    return caps
+
+
+def caps_total(caps, tickers):
+    if caps is None:
+        return float("inf")
+    return sum(caps.values()) if isinstance(caps, dict) else caps * len(tickers)
+
+
 # ------------------------------------------------------------------------------------ sidebar
 sb = st.sidebar
 sb.title("Settings")
@@ -87,26 +125,58 @@ wealth = sb.number_input("Starting wealth (CHF)", 100_000, 50_000_000, 1_000_000
 withdrawal = sb.number_input("Monthly withdrawal (CHF)", 0, 500_000, 2_500, step=500)
 tax = sb.toggle("Pay Swiss wealth tax", value=True, help="Paid every December, 2025 base tax scale (Wealth_Tax.py).")
 
-sb.subheader("Strategy: from OPT to ERC")
+with sb.expander("Assets"):
+    chosen_assets = st.multiselect("Asset classes", B.ASSET_NAMES, default=B.ASSET_NAMES)
+    add_stocks = st.toggle("Add Swiss stocks (SMI)", value=False,
+                           help=f"The {len(B.STOCK_NAMES)} single Swiss stocks. They form their own class "
+                                "'Swiss stocks' for the ERC risk budget and the charts. Slower to run.")
+    chosen_stocks = (st.multiselect("Swiss stocks", B.STOCK_NAMES, default=B.STOCK_NAMES) if add_stocks else [])
+    tickers = [t for t in TICKER_LIST if t in set(chosen_assets) | set(chosen_stocks)]
+    st.caption(f"{len(tickers)} of {len(TICKER_LIST)} assets selected.")
+
+sb.subheader("Strategy: glide path")
 objective = sb.radio(
-    "Starting portfolio (OPT)", ["MVP", "Tangency"], horizontal=True,
-    help="MVP: the lowest-risk mix. Tangency: the best return per unit of risk (uses expected returns). "
-         "Over time the money moves from this portfolio to ERC.")
-sb.caption("The money moves step by step from OPT to ERC: the same amount at each rebalancing, from 100% OPT "
-           "at the start to 100% ERC at the end.")
+    "Optimised portfolio (OPT)", ["MVP", "Tangency"], horizontal=True,
+    help="MVP: the lowest-risk mix. Tangency: the best return per unit of risk (uses expected returns).")
+direction = sb.radio("Direction", ["OPT → ERC", "ERC → OPT"], horizontal=True,
+                     help="The portfolio the money starts in (100% at the start) and the one it ends in.")
+direction_from = "OPT" if direction == "OPT → ERC" else "ERC"
+direction_to = "ERC" if direction_from == "OPT" else "OPT"
+k_year = sb.slider("Shape of the glide path, k (per year)", -0.5, 0.5, 0.0, 0.01, format="%.2f",
+                   help="0: the same amount moves at each rebalancing (straight line). Above 0: the money "
+                        "stays longer in the starting portfolio and moves late. Below 0: it moves early. "
+                        "Set per year, so the shape does not change with the rebalancing frequency.")
+rebalance = sb.slider("Rebalance every ... months", 1, 24, 1,
+                      help="Back to the target weights, and one step along the glide path, every ... months.")
+preview_slot = sb.container()        # glide path preview, drawn once the data period is known
 
 with sb.expander("ERC: share of risk per asset class"):
-    st.caption("ERC splits the risk between the three asset classes as set here, then equally between the assets "
+    st.caption("ERC splits the risk between the asset classes as set here, then equally between the assets "
                "of each class. Equal = classic risk parity.")
-    budget_classes = ["Equities", "Bonds", "Commodities"]
+    budget_classes = [c_ for c_ in B.CLASS_ORDER if any(B.ASSET_CLASS[t] == c_ for t in tickers)]
     group_budget = {c_: st.slider(c_, 5, 80, 33, 1, format="%d", key=f"gb_{c_}") for c_ in budget_classes}
-    tot_b = sum(group_budget.values())
+    tot_b = sum(group_budget.values()) or 1
     st.caption("Share of ERC risk: " + ", ".join(f"{c_} {v / tot_b:.0%}" for c_, v in group_budget.items()))
+
+with sb.expander("Maximum weight per asset"):
+    st.caption("100% = no cap. With a cap c, at least 1/c assets must be tradable on a date: dates with fewer "
+               "get no weights.")
+    opt_cap = st.slider("OPT: cap for every asset", 5, 100, 100, 5, format="%d%%")
+    erc_cap = st.slider("ERC: cap for every asset", 5, 100, 100, 5, format="%d%%")
+    st.caption("Own cap for single assets: fill the cell, leave it empty to use the cap above. "
+               "Assets that are not selected are ignored.")
+    edited_caps = st.data_editor(
+        CAPS_TABLE, key="caps_table", hide_index=True, disabled=["Asset"], height=300,
+        column_config={c_: st.column_config.NumberColumn(min_value=0, max_value=100, step=1, format="%d")
+                       for c_ in ("OPT cap (%)", "ERC cap (%)")})
+    st.caption("An ERC cap that binds makes the risk shares unequal: the result is then risk budgeting "
+               "with bounds, not a pure ERC.")
+opt_caps = caps_setting(edited_caps, "OPT cap (%)", opt_cap, tickers)
+erc_caps = caps_setting(edited_caps, "ERC cap (%)", erc_cap, tickers)
 
 with sb.expander("Advanced settings"):
     st.markdown("**Optimisation (OPT)**")
     long_only = st.toggle("Long only (no short selling)", value=True)
-    max_weight = st.slider("Max weight per asset", 0.05, 1.0, 1.0, 0.05, format="%.2f")
     use_target = st.toggle("Minimum expected excess return", value=False)
     target_ret = st.slider("Target (% p.a. above CHF risk-free)", 0.0, 8.0, 2.0, 0.25) / 100 if use_target else None
     michaud = st.slider("Michaud resampling (draws, 0 = off)", 0, 20, 0,
@@ -119,21 +189,53 @@ with sb.expander("Advanced settings"):
                        (date(1990, 1, 1), min(LAST_MONTH, CONFIG_END)), format="MMM YYYY",
                        help="Default end = END_DATE in Config.py. Data available until "
                             f"{LAST_MONTH:%b %Y}.")
-    st.markdown("**Rebalancing and withdrawals**")
-    rebalance = st.select_slider("Rebalance every ... months", [1, 3, 6, 12], value=1)
-    withdraw_every = st.select_slider("Withdraw every ... months", [1, 3, 6, 12], value=1,
-                                      help="The withdrawal above is paid at this frequency.")
+    st.markdown("**Withdrawals**")
+    withdraw_every = st.slider("Withdraw every ... months", 1, 36, 1,
+                               help="The withdrawal above is paid at this frequency.")
+
+with preview_slot:
+    # rough start: when enough chosen assets have min_obs months of history (the run shows the real path)
+    needed = max(math.ceil(100 / opt_cap), math.ceil(100 / erc_cap))
+    p_start = B.estimated_start(FIRST_RETURNS, tickers, period[0], min_obs, needed)
+    p_end = pd.Timestamp(period[1])
+    if p_start is not None and p_start < p_end:
+        p_dates = pd.date_range(p_start, p_end, freq="ME")
+        share_to = B.glide_path(len(p_dates), k_year, rebalance)
+        fig = go.Figure([go.Scatter(x=p_dates, y=1 - share_to, name=direction_from,
+                                    line=dict(color=COLORS[direction_from], shape="hv")),
+                         go.Scatter(x=p_dates, y=share_to, name=direction_to,
+                                    line=dict(color=COLORS[direction_to], shape="hv"))])
+        fig.update_layout(height=190, margin=dict(l=0, r=0, t=5, b=0), hovermode="x unified",
+                          legend=dict(orientation="h", y=-0.2, title=None))
+        fig.update_yaxes(tickformat=".0%", range=[0, 1])
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+        st.caption(f"Preview, about {p_start:%Y} to {p_end:%Y}: {glide_text(k_year, direction_from, direction_to)}. "
+                   "The Overview tab shows the path of the last run.")
+
+# settings that cannot give a portfolio: say why and keep Run disabled
+problems = []
+if len(tickers) < 2:
+    problems.append("Select at least 2 assets.")
+for name_, caps_ in (("OPT", opt_caps), ("ERC", erc_caps)):
+    if len(tickers) >= 2 and caps_total(caps_, tickers) < 1 - 1e-9:
+        problems.append(f"The {name_} caps add up to {caps_total(caps_, tickers):.0%} over the selected assets: "
+                        "the weights cannot reach 100%.")
+for problem in problems:
+    sb.warning(problem)
 
 settings = dict(start=period[0].isoformat(), end=period[1].isoformat(), min_obs=min_obs, rolling=rolling,
-                objective=objective, long_only=long_only, max_weight=max_weight, target_ret=target_ret,
+                objective=objective, long_only=long_only, target_ret=target_ret,
                 michaud=michaud, group_budget=group_budget, rebalance=rebalance,
+                tickers=tickers, opt_caps=opt_caps, erc_caps=erc_caps,
+                direction_from=direction_from, k_year=k_year,
                 wealth=wealth, withdrawal=withdrawal, withdraw_every=withdraw_every, tax=tax)
 key = json.dumps(settings, sort_keys=True)
 
-run = sb.button("Run backtest", type="primary", width="stretch")
-if run or "result" not in st.session_state:
+run = sb.button("Run backtest", type="primary", width="stretch", disabled=bool(problems))
+if not problems and (run or "result" not in st.session_state):
     try:
-        with st.spinner("Optimising every month since 2000 (5 to 20 seconds)..."):
+        with st.spinner("Optimising every month since 2000 (5 to 20 seconds, longer with Swiss stocks "
+                        "or resampling)..."):
             st.session_state.result = cached_backtest(key)
             st.session_state.result_key = key
             st.session_state.result_settings = settings
@@ -175,6 +277,17 @@ erc_text = ("every asset class carries the same share of risk, split equally bet
             + ", ".join(f"{c_.lower()} {v / gb_tot:.0%}" for c_, v in gb_used.items())
             + "), then equally between the assets of each class")
 
+FROM = S["direction_from"]
+TO = "ERC" if FROM == "OPT" else "OPT"
+opt_kind = "minimum-variance" if S["objective"] == "MVP" else "maximum-Sharpe"
+why = (f"The client starts in the {'lower-risk' if S['objective'] == 'MVP' else 'optimised'} portfolio, when an "
+       "early crash would hurt most because withdrawals lock in the losses, and ends in the broadly diversified "
+       "risk-parity portfolio." if FROM == "OPT" else
+       f"The client starts in the broadly diversified risk-parity portfolio and ends in the {opt_kind} portfolio.")
+n_stocks = sum(t in B.STOCK_NAMES for t in R["tickers"])
+universe = (f"{len(R['tickers']) - n_stocks} asset classes in CHF (equities, government and corporate bonds, "
+            "gold, silver)" + (f" and {n_stocks} Swiss stocks" if n_stocks else ""))
+
 with tabs[0]:
     st.subheader("The idea")
     st.markdown(
@@ -182,15 +295,11 @@ with tabs[0]:
 - **Client:** a Swiss private investor with **{chf(S['wealth'])}**, withdrawing **{chf(S['withdrawal'])}**
   {every(S['withdraw_every'])}{', paying the wealth tax' if S['tax'] else ''}.
 - **Two portfolios, re-estimated every month** from all history available at that date (no look-ahead):
-  **OPT**, a {('minimum-variance' if S['objective'] == 'MVP' else 'maximum-Sharpe')} portfolio, and **ERC**,
-  where {erc_text}.
-- **Glide path:** the money moves step by step from **OPT** to **ERC** over the investment period, the same
-  amount at each rebalancing ({every(S['rebalance'])}). The client starts in the
-  lower-risk portfolio, when an early crash would hurt most because withdrawals lock in the losses, and ends in
-  the broadly diversified risk-parity portfolio.
-- **Universe:** {len(R['tickers'])} asset classes in CHF (equities, government and corporate bonds, gold, silver). An
-  asset enters once it has
-  {S['min_obs']} months of history.
+  **OPT**, a {opt_kind} portfolio, and **ERC**, where {erc_text}.
+- **Glide path:** over the investment period the money moves from **{FROM}** to **{TO}**:
+  {glide_text(S['k_year'], FROM, TO)} (k = {S['k_year']:+.2f} per year, rebalancing {every(S['rebalance'])}).
+  {why}
+- **Universe:** {universe}. An asset enters once it has {S['min_obs']} months of history.
 """
     )
     c = st.columns(5)
@@ -210,8 +319,8 @@ with tabs[0]:
     fig.update_layout(title="Growth of CHF 1 (before withdrawals and tax)")
     st.plotly_chart(style_fig(fig, 380), width="stretch")
 
-    st.subheader("Glide path: how the money moves from OPT to ERC")
-    gp = pd.DataFrame({"ERC": R["share_erc"], "OPT": 1 - R["share_erc"]})
+    st.subheader(f"Glide path: how the money moves from {FROM} to {TO}")
+    gp = pd.DataFrame({"ERC": R["share_erc"], "OPT": 1 - R["share_erc"]})[[FROM, TO]]
     fig = go.Figure([go.Scatter(x=gp.index, y=gp[c_], name=c_, line=dict(color=COLORS[c_], shape="hv"))
                      for c_ in gp])
     fig.update_layout(title="Share of the money in each portfolio during the backtest")
@@ -409,7 +518,8 @@ with tabs[1]:
         st.session_state.pins = {}
     c1, c2 = st.columns([3, 1])
     label = c1.text_input("Name for this scenario",
-                          value=f"{S['objective']} to ERC, ERC risk " + "/".join(str(v) for v in S["group_budget"].values()))
+                          value=f"{FROM} to {TO} ({S['objective']}), k {S['k_year']:+.2f}, rebalance "
+                                f"{S['rebalance']}m, ERC risk " + "/".join(str(v) for v in S["group_budget"].values()))
     if c2.button("Pin current result", width="stretch"):
         st.session_state.pins[label] = {"metrics": mp, "growth": (1 + perf["Portfolio"]).cumprod(),
                                         "end": value["Value"].iloc[-1]}

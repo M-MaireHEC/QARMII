@@ -14,17 +14,21 @@ import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "Support_Files"))
 
-from Config import ASSETS, ASSETS_RET_FILE, RF_FILE, UNIVERSE_DATA_PATH                # noqa: E402
+from Config import (ASSETS, STOCKS, TICKER_LIST, ASSETS_RET_FILE, STOCKS_RET_FILE,  # noqa: E402
+                    RF_FILE, UNIVERSE_DATA_PATH)
 from Constraint_Builders import (new_info_constraints, set_objective, add_long_only_click,  # noqa: E402
                                  add_target_ret, set_resampling, ERC_set_group_budget,
                                  new_constraint_dict, budget, long_only, add_equality)
 from Portfolio_Optimization import Optimize_weights                                 # noqa: E402
 from Portfolio_Combination import sequence                                          # noqa: E402
 
-ASSET_NAMES = list(ASSETS.keys())        # the asset classes in Config.py (the single Swiss stocks are not used)
+ASSET_NAMES = list(ASSETS.keys())        # the asset classes in Config.py
+STOCK_NAMES = list(STOCKS.keys())        # the single Swiss stocks (SMI), optional in the app
 
 def asset_class(ticker):
     """Group of each asset for the ERC risk budget and the charts."""
+    if ticker in STOCKS:
+        return "Swiss stocks"
     if "Gov" in ticker or "Corp" in ticker:
         return "Bonds"
     if ticker in ("Gold", "Silver"):
@@ -32,7 +36,14 @@ def asset_class(ticker):
     return "Equities"
 
 
-ASSET_CLASS = {t: asset_class(t) for t in ASSET_NAMES}
+ASSET_CLASS = {t: asset_class(t) for t in TICKER_LIST}
+CLASS_ORDER = ["Equities", "Bonds", "Commodities", "Swiss stocks"]
+
+
+def k_per_step(k_year, rebalance):
+    """The engine's k bends the glide path once per rebalancing step. The app sets k per year, so the
+    shape of the path stays the same whatever the rebalancing frequency: k_step = k_year * months / 12."""
+    return k_year * rebalance / 12
 
 CRISES = {
     "Dot-com crash (Sep 2000 - Sep 2002)": ("2000-09-01", "2002-09-30"),
@@ -47,27 +58,29 @@ CRISES = {
 # ------------------------------------------------------------------------- part 1: the strategy
 def run_backtest(s):
     """Run the whole strategy for the settings s chosen in the app. Returns pandas tables for the charts."""
-    tickers = ASSET_NAMES
+    tickers = [t for t in TICKER_LIST if t in s["tickers"]]                         # Config order
 
     # constraints for the optimised portfolio (OPT), built with the functions of Constraint_Builders.py
     constraints = set_objective(new_info_constraints(), s["objective"])            # "MVP" or "Tangency"
     if s["long_only"]:
         constraints = add_long_only_click(constraints)
-    if s["max_weight"] < 1:
-        constraints["Max_Weight"] = s["max_weight"]                                  # same cap for every asset
+    # caps: None = no cap, a number = same cap for every asset, a dict {ticker: cap} = own cap per asset
+    constraints["Max_Weight"] = s["opt_caps"]
+    constraints["ERC_Cap"] = s["erc_caps"]
     if s["target_ret"] is not None:
         constraints = add_target_ret(constraints, "min", s["target_ret"] / 12)       # monthly excess return
     if s["michaud"] > 0:
         constraints = set_resampling(constraints, n_resamples=s["michaud"], seed=0)
     constraints = ERC_set_group_budget(constraints, s["group_budget"], ASSET_CLASS)   # ERC risk per class
 
-    # the engine: OPT and ERC every month, glide path from OPT to ERC (k = 0: same step each time),
-    # returns, client wealth after withdrawals and wealth tax
+    # the engine: OPT and ERC every month, glide path between them (shape k), returns,
+    # client wealth after withdrawals and wealth tax
+    direction_to = "ERC" if s["direction_from"] == "OPT" else "OPT"
     master = sequence(constraints=constraints, Tickers=tickers, start_date=s["start"], end_date=s["end"],
                       steps=1, min_obs=s["min_obs"], max_obs=s["rolling"],
                       start_amount=s["wealth"], interest=s["withdrawal"], interest_frequency=s["withdraw_every"],
-                      taxes=s["tax"], direction_from="OPT", direction_to="ERC", k=0,
-                      rebalance_schedule=s["rebalance"])
+                      taxes=s["tax"], direction_from=s["direction_from"], direction_to=direction_to,
+                      k=k_per_step(s["k_year"], s["rebalance"]), rebalance_schedule=s["rebalance"])
 
     # from here: only reshaping into pandas tables for the charts
     m = master.sort("Date")
@@ -102,6 +115,33 @@ def load_returns():
     av = pd.read_csv(UNIVERSE_DATA_PATH / "asset_availability.csv", index_col=0,
                      parse_dates=["first_return", "tradable_from"])
     return rets, rf, av.loc[av.index.isin(ASSET_NAMES)]
+
+
+def first_returns():
+    """First month with a return of every ticker (asset classes and Swiss stocks)."""
+    frames = [pd.read_csv(f, index_col=0, parse_dates=True) for f in (ASSETS_RET_FILE, STOCKS_RET_FILE)]
+    return pd.concat([f.apply(pd.Series.first_valid_index) for f in frames])
+
+
+def estimated_start(first, tickers, start, min_obs, needed=1):
+    """Rough first month of the backtest: when `needed` of the chosen assets have min_obs months of history
+    inside the data period (a cap c needs at least 1/c tradable assets). Only used for the glide path preview."""
+    start = pd.Timestamp(start)
+    tradable = sorted(max(first[t], start) + pd.DateOffset(months=min_obs) for t in tickers if t in first)
+    if not tradable:
+        return None
+    return tradable[min(needed, len(tradable)) - 1]
+
+
+def glide_path(months, k_year, rebalance):
+    """Share of the money in the target portfolio for each month, same formula and same rebalancing counter
+    as Combine_weights in Portfolio_Combination.py (only for the preview, the backtest calls the engine)."""
+    step = np.floor(np.arange(1, months + 1) / rebalance) + 1     # rebalancing period of each month
+    t = step - step.min()
+    if t.max() == 0:
+        return np.zeros(months)
+    k = k_per_step(k_year, rebalance)
+    return t / t.max() if k == 0 else np.expm1(k * t) / np.expm1(k * t.max())
 
 
 def metrics(r, rf):
