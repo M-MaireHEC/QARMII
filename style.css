@@ -1,4 +1,4 @@
-/* QARM II app styling. Loaded at the top of app.py.
+/* QARM II app styling. Loaded at the top of Support_Files/web_streamlit.py (st.html).
    Colours use transparency so the page works in both light and dark mode. */
 
 /* ---------- page ---------- */
@@ -103,9 +103,11 @@ footer { visibility: hidden; }
     overflow: hidden;
 }
 [data-testid="stPlotlyChart"] {
-    border: 1px solid rgba(128, 128, 128, 0.18);
+    /* outline instead of border + padding: plotly sizes the chart to the full box width,
+       so padding or a border pushes it over the edge (legend cut off, scrollbar) */
+    outline: 1px solid rgba(128, 128, 128, 0.18);
+    outline-offset: -1px;
     border-radius: 12px;
-    padding: 0.4rem;
 }
 
 /* ---------- buttons ---------- */

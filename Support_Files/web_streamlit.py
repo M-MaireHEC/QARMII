@@ -3,10 +3,12 @@ from Constraint_Builders import *
 from Portfolio_Optimization import *
 from Portfolio_Combination import *
 import math
+from pathlib import Path
 from typing import Final
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from fetch_universe import *
 from Data_Cleaner import *
@@ -118,22 +120,26 @@ def weights_by_group(weights: pl.DataFrame) -> pl.DataFrame:
     used = grouped.group_by("Group").agg(pl.col("Weight").abs().max()).filter(pl.col("Weight") > 1e-6)["Group"]
     return grouped.filter(pl.col("Group").is_in(used.to_list()))
 
-#stacked allocation through time. Stacked areas cannot show short positions, so bars are used when a group goes negative
+#stacked allocation through time, one colour per asset group.
+#Longs are stacked above 0 and shorts below 0 (two separate stacks), so a short position never hides a long one.
+#Areas instead of ~300 monthly bars: bars leave light seams between them at most screen widths.
 def allocation_chart(weights: pl.DataFrame, title: str):
     df = weights_by_group(weights)
-    has_shorts = (df["Weight"] < -1e-9).any()
-    chart = px.bar if has_shorts else px.area
-    fig = chart(df, x="Date", y="Weight", color="Group", title=title,
-                category_orders={"Group": GROUP_ORDER}, color_discrete_map=GROUP_COLORS)
-    if has_shorts:
-        fig.update_layout(barmode="relative", bargap=0)
-        fig.update_traces(marker_line_width=0)
-    else:
-        fig.update_traces(line_width=1)
-        fig.for_each_trace(lambda tr: tr.update(fillcolor=tr.line.color))  # solid fill, same colour as the bars
-    fig.update_traces(hovertemplate="%{y:.1%}")
-    fig.update_layout(yaxis_tickformat=".0%", yaxis_title=None, xaxis_title=None,
-                      legend_title_text="", hovermode="x unified")
+    present = set(df["Group"].to_list())
+    fig = go.Figure()
+    for group in [g for g in GROUP_ORDER if g in present]:
+        rows = df.filter(pl.col("Group") == group).sort("Date")
+        dates, w = rows["Date"].to_list(), rows["Weight"].to_numpy()
+        color = GROUP_COLORS[group]
+        style = dict(mode="lines", line=dict(width=0.5, color=color), fillcolor=color, legendgroup=group, name=group)
+        #hover shows the group's net weight (long + short)
+        fig.add_trace(go.Scatter(x=dates, y=np.clip(w, 0, None), stackgroup="long",
+                                 customdata=w, hovertemplate="%{customdata:.1%}", **style))
+        if (w < -1e-9).any():
+            fig.add_trace(go.Scatter(x=dates, y=np.clip(w, None, 0), stackgroup="short",
+                                     showlegend=False, hoverinfo="skip", **style))
+    fig.update_layout(title=title, yaxis_tickformat=".0%", yaxis_title=None, xaxis_title=None,
+                      legend_title_text="", legend_traceorder="reversed", hovermode="x unified")
     return fig
 
 #table of every asset: average and latest weight in each portfolio and in the total (numbers in %)
@@ -297,7 +303,19 @@ def asset_picker() -> list:
     return ticker_list
 
 
+#style.css sits at the project root (one level above Support_Files): built from this file's location,
+#so it is found whatever folder `streamlit run` is started from (your PC or Streamlit Cloud)
+STYLE_FILE: Final[Path] = Path(__file__).resolve().parent.parent / "style.css"
+
+
 if __name__ == "__main__":
+    #wide layout: the page uses the window width, style.css caps it at 1300px
+    st.set_page_config(page_title="QARM II", layout="wide")
+    #a Path to a .css file is wrapped in <style> by Streamlit and takes no space on the page
+    #(a plain string would be shown as HTML text instead). Runs on every rerun, like the rest of the script.
+    if STYLE_FILE.is_file():
+        st.html(STYLE_FILE)
+
     #portfolio settings (Long_only, Max_Weight, ...), not new_constraint_dict() which holds the solver matrices A, b, G, h
     constraints = new_info_constraints()
 
