@@ -63,7 +63,8 @@ def new_info_constraints():
         "Target_Ret":None,
         "Resampling":None,  # None = plain optimization, or {"n_resamples": ..., "seed": ...} via set_resampling (Michaud)
         "Objective":"MVP",  # "MVP" = min variance, "Tangency" = max Sharpe
-        "ERC_Cap": None
+        "ERC_Cap": None,
+        "ERC_Group_Budget": None,  # None = classic ERC, or {"budget": ..., "groups": ...} via ERC_set_group_budget
     }
 
 def add_long_only_click(constraints):
@@ -85,6 +86,12 @@ def add_max_weight_per_ticker(constraints, tickers:list, max_weight:list):
 def ERC_add_max_weight_per_ticker(constraints, tickers:list, max_weight:list):
     #pairs each ticker with its own cap (strict: both lists must have the same length)
     constraints["ERC_Cap"] = dict(zip(tickers, max_weight, strict=True))
+    return constraints
+
+def ERC_set_group_budget(constraints, group_budget: dict, asset_groups: dict):
+    #risk split between asset classes, then equally between the assets of each class
+    #group_budget e.g. {"Equities": 1, "Bonds": 1, "Commodities": 1}, asset_groups e.g. {"Gold": "Commodities", ...}
+    constraints["ERC_Group_Budget"] = {"budget": group_budget, "groups": asset_groups}
     return constraints
 
 def add_target_ret(constraints, kind: str, target: float):

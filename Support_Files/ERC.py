@@ -73,8 +73,17 @@ def ERC_optimization(ticker_list:list, start_date, end_date, step = 1, min_obs =
                 rows.append({"Date": row["Date"], "Weights": None})
                 continue
 
+            #ERC risk budget: None = every asset gets the same share of risk,
+            #otherwise each class gets its share, split equally between the class's tradable assets
+            risk_budget = None
+            group_cfg = constraints.get("ERC_Group_Budget")
+            if group_cfg is not None:
+                groups = [group_cfg["groups"][t] for t in tickers]
+                risk_budget = np.array([group_cfg["budget"][g] / groups.count(g) for g in groups])
+                risk_budget = risk_budget / risk_budget.sum()     #shares of risk add up to 1
+
             model = RiskBudgeting(prior_estimator=CustomPrior(np.array(VCV, dtype=float)),
-                                  max_weights=max_weights)
+                                  max_weights=max_weights, risk_budget=risk_budget)
             model.fit(returns)
             weight = np.zeros(N)
             weight[[ticker_list.index(t) for t in tickers]] = model.weights_
