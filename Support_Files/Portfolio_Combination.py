@@ -197,8 +197,6 @@ def numerical_performance_portfolio(master, start_amount:float, interest_payment
         pl.Series("PORTFOLIO_VALUE", values),
     )
     print(master)
-    fig = px.line(master, x="Date", y="PORTFOLIO_VALUE")
-    fig.show()
     return master
 
 
@@ -267,6 +265,41 @@ def master_df(Ticker_list = TICKER_LIST, start_date = START_DATE, end_date = END
 
     return master
 
+def sequence(constraints = new_info_constraints(),
+             Tickers = TICKER_LIST,
+             start_date = START_DATE,
+             end_date = END_DATE,
+             steps = STEPS,
+             min_obs = MIN_OBS,
+             max_obs = MAX_OBS,
+             start_amount = 1_000_000,
+             interest = 2500,
+             interest_frequency = 1,
+             taxes = True,
+             direction_from = "OPT",
+             direction_to = "ERC",
+
+):
+
+    master = master_df(Ticker_list=Tickers,
+                       start_date=start_date,
+                       end_date=end_date,
+                       steps=steps,
+                       min_obs=min_obs,
+                       max_obs=max_obs,
+                       constraints=constraints,
+                        )
+
+    master = Combine_weights(master, 0, 1, direction_from= direction_from, direction_to= direction_to )
+    master = Portfolio_performance(master=master)
+    master = numerical_performance_portfolio(master = master,
+                                             start_amount= start_amount,
+                                             interest_payment = interest,
+                                             interest_frequency=interest_frequency,
+                                             taxes= taxes)
+
+    return master
+
 
 
 if "__main__" == __name__:
@@ -278,11 +311,8 @@ if "__main__" == __name__:
     constraints = add_long_only_click(constraints)
     constraints = set_objective(constraints,"MVP")
     #constraints = set_resampling(constraints,2) #take som compute power, not activated for quicker tests.
+    master = sequence(constraints=constraints, Tickers= TICKER_LIST, start_date=START_DATE, end_date=END_DATE, steps=STEPS,min_obs=MIN_OBS, max_obs=MAX_OBS)
 
-    master = master_df(Ticker_list = TICKER_LIST,start_date=START_DATE,end_date=END_DATE,steps=STEPS,min_obs=MIN_OBS,max_obs=MAX_OBS,constraints=constraints)
-    master = Combine_weights(master, 0,1 )
-    master = Portfolio_performance(master = master)
-    master = numerical_performance_portfolio(master, 1_000_000,2500,1,True )
     print(master.select("Date", "PORTFOLIO_PERFORMANCE", "interest", "wealth_tax", "PORTFOLIO_VALUE"))
     end = time.time()
     print(end-start, "Seconds")

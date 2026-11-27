@@ -9,13 +9,50 @@ import streamlit as st
 from fetch_universe import *
 from Data_Cleaner import *
 
-def wrapper(refresh_data:bool = True):
+def wrapper(refresh_data:bool = False,
+            constraints:dict = new_info_constraints(),
+            launch_click : bool = False,
+            start_amount: float = 1_000_000,
+            interest = 1_000,
+            frequency = 1,
+            taxes : bool = False,
+            direction_from = "OPT",
+            direction_to = "ERC",
+            ):
     if refresh_data:
         #fetch the data
         build()
         #move to master
         pandas_csv_to_polars_cleaner()
 
+    #Launch the Optimizazion when the Launch button is clicked.
+    #st.button is True for one rerun only, so the result is kept in st.session_state:
+    #otherwise it disappears as soon as another widget (K slider, ...) reruns the script.
+    if launch_click:
+        print("OPT launched")
+        st.session_state["master"] = sequence(constraints=constraints,
+                          Tickers=TICKER_LIST,
+                          start_amount=start_amount,
+                          interest_frequency= frequency,
+                          interest = interest,
+                          taxes = taxes,
+                          direction_from = direction_from,
+                          direction_to=direction_to)
+        st.session_state["directions"] = (direction_from, direction_to)
+
+    #show the last launched result (changed settings only apply after clicking Launch again)
+    if "master" in st.session_state:
+        master = st.session_state["master"]
+        direction_from, direction_to = st.session_state["directions"]
+        st.write(master)
+        nice_graphs(master,direction_from=direction_from,direction_to=direction_to)
+
+def nice_graphs (master:pl.DataFrame, direction_from, direction_to):
+    #no copy needed: polars never changes master in place, every operation returns a new DataFrame
+    #renaming the columns to make more sense
+
+    fig_portfolio_value = px.line(master, x = "Date", y = "PORTFOLIO_VALUE", title="Portfolio CHF Value through time")
+    st.plotly_chart(fig_portfolio_value)
 
 
 
@@ -88,12 +125,41 @@ if __name__ == "__main__":
         #same cap everywhere -> pass the number, otherwise the dict {ticker: cap}
         constraints["Max_Weight"] = cap_all / 100 if len(set(caps.values())) == 1 else caps
 
+    #ask for financial amounts
+    loan_amount = st.number_input(label="Loan amount", min_value=1, value=1_000_000)  # start amount of the portfolio
+    interest = st.number_input(label="Interest payements", min_value=0.01)
+    additional_spending = st.number_input(label="Additional withdrawals", min_value=0)
+    interest = interest+additional_spending
+    withdrawal_frequency = st.slider("How frequently do you withdraw ?", min_value=1, max_value=36, value = 12)
+    taxes = st.toggle("Account for taxes?")
 
-    st.write(constraints)
+    #ask from what portfolio to start
+    Combination = st.segmented_control(
+        label="Combination",
+        options=[f"{objective} -> ERC", f"ERC -> {objective}"],
+        default=f"{objective} -> ERC",
+        label_visibility="collapsed"
+    )
 
-    #refresh the data
+    if Combination == f"{objective} -> ERC":
+        direction_from = "OPT"
+        direction_to = "ERC"
+    else:
+        direction_from = "ERC"
+        direction_to = "OPT"
+
+
+
+    #refresh the data / launch the optimization: one wrapper call handles both buttons
+    #(two calls would run the data refresh twice)
     refresh_data = st.button("Refresh Data")
-    wrapper(refresh_data)
+    launch_click = st.button("Launch")
+    wrapper(refresh_data=refresh_data, constraints=constraints, launch_click=launch_click,
+            start_amount=loan_amount, interest=interest, frequency=withdrawal_frequency, taxes=taxes,
+            direction_from=direction_from, direction_to=direction_to)
+
+    #Show current constraint
+    st.write(constraints)
 
     #Visuals for combination
     k = st.slider("K", 0,500)
