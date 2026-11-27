@@ -235,7 +235,7 @@ def visual_combination(years, k, rebalancing):
 def master_df(Ticker_list = TICKER_LIST, start_date = START_DATE, end_date = END_DATE, steps = STEPS, min_obs = MIN_OBS, max_obs = MAX_OBS, constraints = {}):
     #ERC portfolio
 
-    ERC_dic = ERC_optimization(ticker_list=Ticker_list,start_date=start_date,end_date=end_date,step=steps,min_obs=min_obs,max_obs=max_obs)
+    ERC_dic = ERC_optimization(ticker_list=Ticker_list,start_date=start_date,end_date=end_date,step=steps,min_obs=min_obs,max_obs=max_obs,constraints=constraints)
     ERC_weights = ERC_dic["weights_df"]
     ERC_Sigma = ERC_dic["sigma_df"]
     del ERC_dic

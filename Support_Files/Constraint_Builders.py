@@ -63,6 +63,7 @@ def new_info_constraints():
         "Target_Ret":None,
         "Resampling":None,  # None = plain optimization, or {"n_resamples": ..., "seed": ...} via set_resampling (Michaud)
         "Objective":"MVP",  # "MVP" = min variance, "Tangency" = max Sharpe
+        "ERC_Cap": None
     }
 
 def add_long_only_click(constraints):
@@ -79,6 +80,11 @@ def add_max_weight_per_ticker(constraints, tickers:list, max_weight:list):
         position = tickers.index(ticker)
         dic_ticker_weight[ticker] = max_weight[position]
     constraints["Max_Weight"] = dic_ticker_weight
+    return constraints
+
+def ERC_add_max_weight_per_ticker(constraints, tickers:list, max_weight:list):
+    #pairs each ticker with its own cap (strict: both lists must have the same length)
+    constraints["ERC_Cap"] = dict(zip(tickers, max_weight, strict=True))
     return constraints
 
 def add_target_ret(constraints, kind: str, target: float):
