@@ -280,6 +280,9 @@ def sequence(constraints = new_info_constraints(),
              taxes = True,
              direction_from = "OPT",
              direction_to = "ERC",
+             k = 1,
+             rebalance_schedule = 1
+
 
 ):
 
@@ -290,9 +293,10 @@ def sequence(constraints = new_info_constraints(),
                        min_obs=min_obs,
                        max_obs=max_obs,
                        constraints=constraints,
+
                         )
 
-    master = Combine_weights(master, 0, 1, direction_from= direction_from, direction_to= direction_to )
+    master = Combine_weights(master, k =  k, rebalance_schedule=rebalance_schedule, direction_from= direction_from, direction_to= direction_to  )
     master = Portfolio_performance(master=master)
     master = numerical_performance_portfolio(master = master,
                                              start_amount= start_amount,

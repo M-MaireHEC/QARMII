@@ -18,6 +18,8 @@ def wrapper(refresh_data:bool = False,
             taxes : bool = False,
             direction_from = "OPT",
             direction_to = "ERC",
+            k = 1,
+            rebalance_schedule = 1,
             ):
     if refresh_data:
         #fetch the data
@@ -37,7 +39,9 @@ def wrapper(refresh_data:bool = False,
                           interest = interest,
                           taxes = taxes,
                           direction_from = direction_from,
-                          direction_to=direction_to)
+                          direction_to=direction_to,
+                            k = k,
+                            rebalance_schedule = rebalance_schedule,)
         st.session_state["directions"] = (direction_from, direction_to)
 
     #show the last launched result (changed settings only apply after clicking Launch again)
@@ -149,18 +153,6 @@ if __name__ == "__main__":
         direction_to = "OPT"
 
 
-
-    #refresh the data / launch the optimization: one wrapper call handles both buttons
-    #(two calls would run the data refresh twice)
-    refresh_data = st.button("Refresh Data")
-    launch_click = st.button("Launch")
-    wrapper(refresh_data=refresh_data, constraints=constraints, launch_click=launch_click,
-            start_amount=loan_amount, interest=interest, frequency=withdrawal_frequency, taxes=taxes,
-            direction_from=direction_from, direction_to=direction_to)
-
-    #Show current constraint
-    st.write(constraints)
-
     #Visuals for combination
     k = st.slider("K", 0,500)
     k = k/1000
@@ -171,3 +163,15 @@ if __name__ == "__main__":
     result = visual_combination(years, k, rebalance)
     fig = px.line(result, x="months", y=["ERC", "OPT"], )
     st.plotly_chart(fig)
+
+    #refresh the data / launch the optimization: one wrapper call handles both buttons
+    #(two calls would run the data refresh twice)
+    refresh_data = st.button("Refresh Data")
+    launch_click = st.button("Launch")
+    wrapper(refresh_data=refresh_data, constraints=constraints, launch_click=launch_click,
+            start_amount=loan_amount, interest=interest, frequency=withdrawal_frequency, taxes=taxes,
+            direction_from=direction_from, direction_to=direction_to, k = k, )
+
+    #Show current constraint
+    st.write(constraints)
+
